@@ -197,7 +197,7 @@ Back on the VM, fill in the origin you just got and restart:
 # in server/.env
 ALLOWED_ORIGINS=https://your-site.netlify.app
 
-docker compose restart api
+docker compose up -d api    # recreates the container so the new value is read
 ```
 
 Then open your Netlify URL. You should get the sign-in screen, be able to sign
@@ -209,8 +209,8 @@ error means `ALLOWED_ORIGINS` does not exactly match your Netlify origin
 
 ### Adding a teammate
 
-Add their address to `AUTH_ALLOWED_EMAILS` (comma-separated) and
-`docker compose restart api`. Nothing else. They sign in with Google and share
+Add their address to `AUTH_ALLOWED_EMAILS` (comma-separated) and run
+`docker compose up -d api`. Nothing else. They sign in with GitHub and share
 the same workspace.
 
 ---
@@ -219,10 +219,16 @@ the same workspace.
 
 ```bash
 docker compose logs -f api      # follow the API log
-docker compose restart api      # apply an .env change
+docker compose up -d api        # apply an .env change (see note below)
 git pull && docker compose up -d --build   # deploy new code
 docker compose ps               # check both containers are up
 ```
+
+> **Use `up -d`, not `restart`, after editing `server/.env`.** Environment
+> variables are read when a container is *created*, so `docker compose restart`
+> reuses the old values and your change silently does nothing. `up -d` recreates
+> the container when the config has changed. Confirm it took with:
+> `docker compose exec api printenv ALLOWED_ORIGINS`
 
 **Things worth knowing**
 
