@@ -1,4 +1,4 @@
-// Team sign-in for the dashboard, via Supabase Auth (Google).
+// Team sign-in for the dashboard, via Supabase Auth (GitHub).
 //
 // Configured through build-time env vars (set in Netlify): VITE_SUPABASE_URL
 // and VITE_SUPABASE_ANON_KEY. When they are absent — local dev, or the test
@@ -47,10 +47,12 @@ export function onAuthChange(cb) {
   return () => data.subscription.unsubscribe();
 }
 
-export function signInWithGoogle() {
-  // Returns to this same page; Supabase completes the session from the URL.
+// Hands off to GitHub and returns to this same page, where Supabase completes
+// the session from the URL. Which signed-in addresses are actually admitted is
+// decided by the server's allowlist, not here.
+export function signInWithGitHub() {
   return supabase?.auth.signInWithOAuth({
-    provider: 'google',
+    provider: 'github',
     options: { redirectTo: window.location.origin + window.location.pathname },
   });
 }

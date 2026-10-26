@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { authReady, onAuthChange, signInWithGoogle, signOut } from '../lib/auth.js';
+import { authReady, onAuthChange, signInWithGitHub, signOut } from '../lib/auth.js';
 
 // Wraps the app in a sign-in gate. When auth isn't configured (local dev / the
 // test build), it renders the app straight through so nothing changes there.
-// Otherwise it shows a sign-in screen until a Google session exists, then
+// Otherwise it shows a sign-in screen until a GitHub session exists, then
 // renders the app and hands it { user, signOut }.
 export default function AuthGate({ children }) {
   const [state, setState] = useState(authReady ? { phase: 'loading' } : { phase: 'open' });
@@ -34,9 +34,9 @@ export default function AuthGate({ children }) {
         {state.phase === 'loading' ? (
           <div style={S.loading}>Checking your session…</div>
         ) : (
-          <button style={S.btn} onClick={() => signInWithGoogle()} type="button">
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M23 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.2a5.3 5.3 0 0 1-2.3 3.5v2.9h3.7c2.2-2 3.4-5 3.4-8.6z"/><path fill="#34A853" d="M12 24c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.3 1.1-3.9 1.1-3 0-5.5-2-6.4-4.8H1.8v3C3.7 21.4 7.6 24 12 24z"/><path fill="#FBBC05" d="M5.6 14.6a7.2 7.2 0 0 1 0-4.6v-3H1.8a12 12 0 0 0 0 10.6l3.8-3z"/><path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.3-3.3C17.7 1.2 15.1 0 12 0 7.6 0 3.7 2.6 1.8 6.4l3.8 3C6.5 6.7 9 4.8 12 4.8z"/></svg>
-          Sign in with Google
+          <button style={S.btn} onClick={() => signInWithGitHub()} type="button">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          Sign in with GitHub
         </button>
         )}
         <p style={S.foot}>Access is limited to the people your workspace admits.</p>
