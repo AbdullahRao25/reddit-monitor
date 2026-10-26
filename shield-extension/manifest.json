@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Reddit Account Shield Companion",
+  "version": "0.1.0",
+  "description": "Displays local Shield health and opens the managed draft review workspace. No Reddit traffic interception.",
+  "action": { "default_popup": "popup.html", "default_title": "Account Shield" },
+  "host_permissions": ["http://127.0.0.1:4000/*", "http://127.0.0.1:5173/*"]
+}

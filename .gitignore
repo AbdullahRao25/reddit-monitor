@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# Secrets. .env holds the Supabase service-role key; never commit it.
+.env
+.env.*
+!.env.example
+
+*.log
+
+# Old copies and installer snapshots kept on disk, not part of the build.
+# Covers client-backup/, client-mockup-backup/, .shield-install-backup/,
+# .prevention-ops-backup/ and any future *-backup folder.
+*-backup/
+*.zip
+
+# Local scratch
+.DS_Store
+Thumbs.db

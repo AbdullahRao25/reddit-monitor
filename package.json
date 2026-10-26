@@ -1,0 +1,19 @@
+{
+  "name": "reddit-health-monitor",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
+    "demo": "concurrently -n demo,client -c blue,magenta \"npm run demo -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "start": "npm start -w server",
+    "test": "npm test -w server",
+    "test:frontend-api": "node --test client/test/*.test.js"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}

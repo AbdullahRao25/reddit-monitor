@@ -1,0 +1,23 @@
+/* Prevention Operations — all colors inherit the established light/dark theme. */
+.prevention-ops { display:flex; flex-direction:column; gap:16px; }
+.prevention-ops .panel {padding:22px;}
+.prevention-ops h3 {margin:0 0 12px;}
+.prevention-ops p {line-height:1.5;}
+.prevention-toolbar {display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+.prevention-toolbar label,.prevention-form label,.prevention-block>label {display:flex;flex-direction:column;gap:8px;font-weight:600;}
+.prevention-ops select,.prevention-ops input,.prevention-ops textarea {border:1px solid var(--border, #70708066);border-radius:8px;padding:9px 11px;background:var(--surface, transparent);color:inherit;max-width:100%;}
+.prevention-form {display:flex;flex-direction:column;align-items:flex-start;gap:12px;margin:18px 0;}
+.prevention-form textarea {width:min(100%,720px);}
+.prevention-metrics {display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:14px;margin:16px 0;}
+.prevention-metrics>div {display:flex;flex-direction:column;border:1px solid var(--border, #70708055);padding:12px;border-radius:12px;min-width:0;}
+.prevention-metrics strong {font-size:1.5rem;overflow-wrap:anywhere;}
+.prevention-metrics small {opacity:.7;margin-top:3px;}
+.prevention-review-list {display:flex;flex-direction:column;gap:8px;margin-top:12px;}
+.prevention-review {display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px;border:1px solid var(--border, #70708055);border-radius:10px;flex-wrap:wrap;}
+.prevention-review p {margin:4px 0 0;}
+.prevention-actions {display:flex;gap:8px;}
+.prevention-actions button {border:1px solid var(--border, #70708088);border-radius:8px;padding:7px 10px;color:inherit;background:transparent;cursor:pointer;}
+.prevention-actions button:disabled {opacity:.4;cursor:not-allowed;}
+.prevention-warning {border-left:3px solid #dc9a35;padding:8px 12px;}
+.prevention-tasks {padding-left:24px;}
+.prevention-tasks li {margin-bottom:12px;}.prevention-tasks p {margin:4px 0;}
