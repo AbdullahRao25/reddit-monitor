@@ -6,7 +6,11 @@
 # Reddit and run duplicate checks. Never scale this service.
 #
 # Builds on x86_64 and on arm64 (Oracle's Ampere A1 free tier).
-FROM node:20-bookworm-slim
+#
+# Node 22, not 20: @supabase/supabase-js builds a realtime client at
+# createClient() and needs a global WebSocket, which Node 20 does not have.
+# On 20 the server crashes on startup before it can serve anything.
+FROM node:22-bookworm-slim
 
 ENV NODE_ENV=production
 WORKDIR /app
