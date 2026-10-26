@@ -1,0 +1,50 @@
+# Backend stack for the Oracle Cloud VM: the API plus Caddy, which terminates
+# HTTPS and gets a free Let's Encrypt certificate automatically.
+#
+# HTTPS is not optional here: the dashboard is served from Netlify over HTTPS,
+# and browsers refuse to let an HTTPS page call a plain-HTTP API.
+#
+# Start with:  docker compose up -d --build
+# Never use --scale on the api service (see the note in the Dockerfile).
+
+services:
+  api:
+    build: .
+    image: reddit-monitor-api
+    restart: unless-stopped
+    env_file:
+      - ./server/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "4000"
+    # Chromium crashes with Docker's default 64MB /dev/shm. This is the
+    # standard fix and needs no code change.
+    shm_size: 1gb
+    expose:
+      - "4000"
+    networks: [monitor]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Set both in a .env file next to this one (see DEPLOY.md).
+      API_DOMAIN: ${API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # keeps issued certificates across restarts
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks: [monitor]
+
+networks:
+  monitor:
+
+volumes:
+  caddy_data:
+  caddy_config:

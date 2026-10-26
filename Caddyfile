@@ -1,0 +1,22 @@
+# Caddy fetches and renews a free Let's Encrypt certificate for API_DOMAIN
+# automatically, as long as ports 80 and 443 reach this machine.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$API_DOMAIN} {
+	encode gzip
+
+	# The dashboard's origin check and sign-in happen in the app; Caddy just
+	# forwards. Caddy sets no response timeout by default, which is what a
+	# check taking 30s+ in html mode needs, so leave the defaults alone.
+	reverse_proxy api:4000
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

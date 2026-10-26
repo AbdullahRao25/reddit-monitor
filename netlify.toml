@@ -1,0 +1,25 @@
+# Netlify hosts the dashboard only. The API lives on the Oracle VM and the
+# browser calls it directly over HTTPS (set VITE_API_BASE), so there is no
+# proxy here on purpose: a check can take 30s+ and Netlify's proxy would
+# time out partway through.
+
+[build]
+  command = "npm install && npm run build"
+  publish = "client/dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# The dashboard is a single-page app, so every path serves index.html and the
+# in-page router takes over.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
