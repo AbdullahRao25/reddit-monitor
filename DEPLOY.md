@@ -148,23 +148,28 @@ A `401` is correct and is what you want to see.
 
 ---
 
-## 4. Turn on Google sign-in
+## 4. Turn on GitHub sign-in
 
 Two places have to agree, which is the usual source of "redirect_uri_mismatch".
 
-**(a) Google Cloud Console** → *APIs & Services → Credentials → Create
-credentials → OAuth client ID → Web application*. Under **Authorized redirect
-URIs** add exactly:
+**(a) GitHub** → *Settings → Developers → OAuth Apps → New OAuth App*. The
+**Redirect URI** (older wording: "Authorization callback URL") must be exactly:
 
 ```
 https://<your-project-ref>.supabase.co/auth/v1/callback
 ```
 
-Copy the client ID and secret.
+Register it, copy the **Client ID**, then **Generate a new client secret** and
+copy that too — GitHub shows the secret only once.
 
-**(b) Supabase** → *Authentication → Providers → Google*: enable it and paste
-the client ID and secret. Then under *Authentication → URL Configuration* set
-**Site URL** to your Netlify URL and add it to **Redirect URLs** too.
+**(b) Supabase** → *Authentication → Sign In / Providers → GitHub*: enable it
+and paste the client ID and secret. Then under *Authentication → URL
+Configuration* set **Site URL** to your Netlify URL and add it to **Redirect
+URLs** as well, or sign-in will bounce to the wrong address.
+
+> GitHub is used because it needs no cloud console and no payment method. Any
+> provider Supabase supports works the same way — only the client code's
+> provider name would change.
 
 ---
 
@@ -201,7 +206,7 @@ docker compose up -d api    # recreates the container so the new value is read
 ```
 
 Then open your Netlify URL. You should get the sign-in screen, be able to sign
-in with Google, and land in the dashboard with your accounts loaded.
+in with GitHub, and land in the dashboard with your accounts loaded.
 
 If the dashboard loads but data does not, open the browser console. A CORS
 error means `ALLOWED_ORIGINS` does not exactly match your Netlify origin
