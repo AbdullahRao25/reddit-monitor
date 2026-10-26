@@ -1,0 +1,14 @@
+# Relay mode (see docker-compose.tunnel.yml): forward to the SSH reverse
+# tunnel on this VM's loopback, which leads back to the backend on your PC.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$API_DOMAIN} {
+	encode gzip
+
+	# 127.0.0.1:4000 is the tunnel endpoint, not a container. If the tunnel is
+	# down this returns 502, which is the honest answer: the backend is offline.
+	reverse_proxy 127.0.0.1:4000
+}

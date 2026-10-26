@@ -1,0 +1,38 @@
+# Relay mode.
+#
+# Reddit answers 403 to datacenter IPs, so the backend cannot usefully run on a
+# cloud VM in html mode. Here the backend runs on your own machine and this VM
+# does nothing but terminate HTTPS and forward to it through an SSH reverse
+# tunnel, which you open from your PC:
+#
+#   ssh -R 4000:127.0.0.1:4000 ubuntu@<vm-ip>
+#
+# That makes your PC's 127.0.0.1:4000 appear as the VM's 127.0.0.1:4000, which
+# Caddy forwards to. Requests to Reddit then originate from your home
+# connection, which Reddit serves normally.
+#
+# Start with:  docker compose -f docker-compose.tunnel.yml up -d
+#
+# Caddy runs in host network mode so it can reach the tunnel on the VM's own
+# loopback. It keeps the same named volumes as docker-compose.yml, so the
+# certificate already issued is reused rather than requested again.
+#
+# Switch back to running the backend on the VM (for REDDIT_MODE=oauth, where
+# the datacenter IP does not matter) with the normal docker-compose.yml.
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
