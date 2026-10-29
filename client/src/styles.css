@@ -81,3 +81,27 @@
    — no inline styles — so these two carry the spacing they need. */
 .panel-verdict {margin-bottom:14px;}
 .gate-decision {margin-top:14px;}
+
+/* Recovered history (ArchivePanel). The other data tables hold short cells, so
+   .data-table sets white-space:nowrap and never needs to wrap. This one holds
+   post titles and comment bodies, which would otherwise push the table past
+   the window instead of wrapping. The cell wraps, the text is clamped to a few
+   lines, and a row opens on demand. */
+.archive-table {table-layout:fixed;min-width:760px;}
+.archive-table th:nth-child(1), .archive-table td:nth-child(1) {width:110px;}
+.archive-table th:nth-child(2), .archive-table td:nth-child(2) {width:80px;}
+.archive-table th:nth-child(3), .archive-table td:nth-child(3) {width:150px;}
+.archive-table th:nth-child(5), .archive-table td:nth-child(5) {width:170px;}
+.archive-table td {vertical-align:top;}
+.archive-when {white-space:nowrap;color:var(--muted);}
+.archive-cell {white-space:normal;}
+.archive-said {display:flex;flex-direction:column;gap:5px;}
+.archive-text {white-space:normal;overflow-wrap:anywhere;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.archive-text.is-open {display:block;overflow:visible;}
+.archive-body {white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:11.5px;line-height:1.55;margin-top:2px;}
+.archive-more {align-self:flex-start;background:none;border:0;padding:0;cursor:pointer;color:var(--purple);font-size:11px;font-weight:700;letter-spacing:.2px;}
+.archive-more:hover {text-decoration:underline;}
+.archive-stats {display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;margin:0 24px 14px;font-size:11.5px;color:var(--muted);}
+.archive-stats strong {color:var(--ink);font-size:13px;font-weight:800;margin-right:3px;}
+.archive-subs {flex-basis:100%;overflow-wrap:anywhere;}
+.archive-note {margin:14px 24px 0;overflow-wrap:anywhere;}

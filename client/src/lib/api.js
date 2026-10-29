@@ -83,6 +83,11 @@ export const api = {
   votes: (accountId, {direction, kind}={}) => request(`/accounts/${id(accountId)}/votes?${new URLSearchParams({...(direction?{direction}:{}),...(kind?{kind}:{})})}`),
   importVotes: (accountId, kind, csvText) => request(`/accounts/${id(accountId)}/votes/import?kind=${encodeURIComponent(kind)}`,{method:'POST',csv:csvText}),
   clearVotes: (accountId) => request(`/accounts/${id(accountId)}/votes`,{method:'DELETE'}),
+  // Recovered history for an account whose public pages are gone. Reading is
+  // local; recovering calls an outside archive, so it is an explicit action.
+  archive: (accountId) => request(`/accounts/${id(accountId)}/archive`),
+  recoverArchive: (accountId) => request(`/accounts/${id(accountId)}/archive/recover`,{method:'POST',body:{}}),
+  clearArchive: (accountId) => request(`/accounts/${id(accountId)}/archive`,{method:'DELETE'}),
   // The team, from Supabase Auth. Inviting and removing need a workspace owner;
   // the server decides that and reports it as can_manage.
   members: () => request('/members'),

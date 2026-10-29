@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@supabase/supabase-js';
 import { createApp } from './app.js';
+import { createArchiveClient } from './archive.js';
 import { createAuth, supabaseVerifier } from './auth.js';
 import { createChecker } from './checker.js';
 import { config, missingConfig } from './config.js';
@@ -97,7 +98,13 @@ if (missing.length > 0) {
     owners: config.auth.allowedEmails,
   });
 
-  deps = { missing, repo, reddit, checker, scheduler, retention, escalation, auth, members, corsOrigins: config.allowedOrigins };
+  // Recovers the history of an account that has gone dark. It talks to a
+  // third-party public archive rather than Reddit, so it is its own client and
+  // shares nothing with the reader: a blocked reader must not stop a recovery,
+  // and a recovery must not consume the reader's Reddit rate-limit budget.
+  const archive = createArchiveClient();
+
+  deps = { missing, repo, reddit, checker, scheduler, retention, escalation, auth, members, archive, corsOrigins: config.allowedOrigins };
 }
 
 const app = createApp({ ...deps, clientDist: existsSync(clientDist) ? clientDist : null });

@@ -32,6 +32,15 @@ function unwrapVotes(response, action) {
   return unwrap(response, action);
 }
 
+// Recovered history comes from its own migration, so name it when it is missing.
+function unwrapArchive(response, action) {
+  const { error } = response;
+  if (error && (['42P01', 'PGRST205'].includes(error.code) || /does not exist|schema cache/i.test(error.message))) {
+    throw new HttpError(503, 'Recovered history needs its table: run supabase/archive.sql in the Supabase SQL editor.');
+  }
+  return unwrap(response, action);
+}
+
 // The gate queue comes from its own migration, so name it when it is missing.
 function unwrapGate(response, action) {
   const { error } = response;
@@ -141,6 +150,42 @@ export function createSupabaseRepo(db) {
             .order('removal_detected_at', { ascending: false, nullsFirst: false })
         : query.order('created_at', { ascending: false });
       return unwrap(await query.limit(limit), 'load content');
+    },
+
+    // ---- recovered history (supabase/archive.sql) ----
+
+    async listArchivedItems(accountId) {
+      // Paged like the vote list: Supabase caps a response at PAGE rows, so a
+      // single read would silently truncate a long history.
+      const rows = [];
+      for (let from = 0; ; from += PAGE) {
+        const page = unwrapArchive(
+          await db
+            .from('archived_items')
+            .select('*')
+            .eq('account_id', accountId)
+            .order('created_at', { ascending: false, nullsFirst: false })
+            .range(from, from + PAGE - 1),
+          'load recovered history',
+        );
+        rows.push(...page);
+        if (page.length < PAGE) return rows;
+      }
+    },
+
+    async upsertArchivedItems(rows) {
+      // first_seen_at is left out so a later recovery keeps the first one's
+      // time, the same rule the vote import follows.
+      for (let i = 0; i < rows.length; i += UPSERT_CHUNK) {
+        unwrapArchive(
+          await db.from('archived_items').upsert(rows.slice(i, i + UPSERT_CHUNK), { onConflict: 'account_id,item_id' }),
+          'save recovered history',
+        );
+      }
+    },
+
+    async clearArchivedItems(accountId) {
+      unwrapArchive(await db.from('archived_items').delete().eq('account_id', accountId), 'clear recovered history');
     },
 
     async getPreventionProfile(accountId) {

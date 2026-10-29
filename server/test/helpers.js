@@ -20,6 +20,7 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
   const preventionProfiles = new Map();
   const preventionReviews=new Map();
   const votes = new Map(); // `${account_id}|${item_id}` -> account_votes row
+  const archived = new Map(); // `${account_id}|${item_id}` -> archived_items row
   const shieldDrafts=new Map(),shieldHolds=new Map(),shieldEvents=[],shieldOutcomes=[],shieldIncidents=new Map();
   const gateQueue=new Map(); // stealth_gate_queue rows, keyed by id
   const withAccount = (alert) => ({ ...alert, account: { username: accounts.get(alert.account_id)?.username } });
@@ -231,6 +232,22 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
     },
     async ackAllAlerts() {
       for (const row of alerts) if (!row.acknowledged_at) row.acknowledged_at = iso();
+    },
+    async listArchivedItems(accountId) {
+      return [...archived.values()]
+        .filter((row) => row.account_id === accountId)
+        .sort((a, b) => Date.parse(b.created_at ?? 0) - Date.parse(a.created_at ?? 0))
+        .map((row) => ({ ...row }));
+    },
+    async upsertArchivedItems(rows) {
+      for (const row of rows) {
+        const key = `${row.account_id}|${row.item_id}`;
+        // first_seen_at survives a later recovery, as the real table does.
+        archived.set(key, { first_seen_at: row.fetched_at, ...archived.get(key), ...row });
+      }
+    },
+    async clearArchivedItems(accountId) {
+      for (const [key, row] of archived) if (row.account_id === accountId) archived.delete(key);
     },
     async replaceAccountVotes(accountId, kind, rows, importedAt) {
       for (const row of rows) {

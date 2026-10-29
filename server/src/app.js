@@ -13,6 +13,7 @@ import { registerGateRoutes } from './stealth/gateRoutes.js';
 import { VOTE_KINDS, parseVoteCsv, sharedVotesFor, summarizeVotes, voteOrder } from './votes.js';
 import { readerErrorDetails } from './readerErrors.js';
 import { registerReaderVerificationRoutes } from './readerVerification.js';
+import { registerArchiveRoutes } from './archiveRoutes.js';
 
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
 
@@ -46,6 +47,9 @@ export function createApp({
   // The team, from Supabase Auth (see members.js). Absent when the server has
   // no service-role key, in which case /api/members answers 503.
   members = null,
+  // Recovers the history of an account that has gone dark (see archive.js).
+  // Absent in tests that do not exercise it; the route then answers 503.
+  archive = null,
   // Browser origins allowed to call the API cross-origin (the Netlify site).
   corsOrigins = [],
   log = console,
@@ -111,7 +115,7 @@ export function createApp({
       res.status(503).json({ error: `Server not configured. Missing in server/.env: ${missing.join(', ')}` });
     });
   } else {
-    registerRoutes(app, { repo, reddit, checker, scheduler, members, log });
+    registerRoutes(app, { repo, reddit, checker, scheduler, members, archive, log });
   }
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
@@ -134,13 +138,14 @@ export function createApp({
   return app;
 }
 
-function registerRoutes(app, { repo, reddit, checker, scheduler, members, log }) {
+function registerRoutes(app, { repo, reddit, checker, scheduler, members, archive, log }) {
   const requireAccount = accountRequirer(repo);
 
   registerShieldRoutes(app,{repo,reddit});
   registerPreventionOperationsRoutes(app,{repo});
   registerGateRoutes(app, { repo, log });
   registerReaderVerificationRoutes(app, { reddit });
+  registerArchiveRoutes(app, { repo, archive, log });
 
   // Preventer: internal, read-only activity & draft checks. No automatic
   // posting, voting, or manipulation of Reddit sessions occurs here.

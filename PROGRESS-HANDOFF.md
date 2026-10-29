@@ -393,3 +393,63 @@ supersedes the earlier request to enable manual solving.
 - Keep both optional browser engines and manual CAPTCHA flow off unless the
   user later requests re-enabling them. Live Reddit access remains unconfirmed.
 
+
+## Reader made to work end to end, plus recovered history — 30 October 2026
+
+The reader now reads live Reddit successfully (profile, posts, comments) on
+**standard Playwright**. Optional engines stay off, as previously decided.
+
+**Open question for the user — one earlier decision is currently deviated from.**
+`REDDIT_MANUAL_VERIFICATION=true` is set in `.env`. The 29 Oct entry says to
+keep the manual CAPTCHA flow off, but that setting is also what forces the
+browser to run headful, and headless is refused by Reddit outright
+(`access_denied`, measured). So it is presently the reason reads work at all.
+The visible-window problem that motivated turning it off has been solved
+separately: the window is now placed off-screen and never appears. Confirm
+whether to keep it on, or to split "run headful" from "offer manual CAPTCHA"
+into two settings.
+
+Reader fixes (all engine-independent):
+
+- `collectTags` matched a tag name with a trailing `\b`, which also matches a
+  longer hyphenated tag, so `<shreddit-post\b>` collected `shreddit-post-flair`,
+  `-overflow-menu` and `-text-body`. Those have no `id="t3_..."`, so every
+  listing failed `supportedListingCards` and was reported unparseable. A live
+  page had 23 real posts against 62 wrappers. Anchored with `(?=[\s/>])`.
+- `browserChallenge` matched the bare token `g-recaptcha`, which hits the hidden
+  `g-recaptcha-response` field Reddit ships on ordinary pages. Any page without
+  a profile card was therefore called a browser challenge — including the
+  banned-account page. Narrowed to the widget and Cloudflare's interstitial.
+- Publicly banned accounts now read as `suspended`, a state the schema and
+  checker already supported but the HTML reader never produced.
+- A self-submitting challenge document is waited out before being reported.
+- A *warm* browser that turns out to be dead is replaced within the request; a
+  failure on a fresh launch is still reported.
+- The headful window is off-screen with the crash-restore and first-run bubbles
+  suppressed. `revealWindow()` (CDP) brings it back if a person must finish a
+  challenge. `REDDIT_BROWSER_VISIBLE=true` opts out.
+
+Operational: run **production mode** (`npm run build && npm start`, port 4000).
+Dev mode's `--watch-path=.env --watch-path=src` restarts the server mid-check —
+a check takes ~45 s — and Vite's proxy then answers an empty-bodied 500, which
+is what "POST …/check: HTTP 500" was. Proven by touching `.env` mid-check.
+
+New feature — recovered history (`supabase/archive.sql`, run by hand):
+
+- `src/archive.js` (pure parsing + injectable client) reads a third-party public
+  archive for an account whose Reddit pages are gone. `src/archiveRoutes.js`
+  owns persistence. Rows live in `archived_items`, deliberately **not**
+  `content_items`: the checker treats a stored item missing from today's listing
+  as a removal, so archive rows there would manufacture removals every check.
+- Every row carries `source`, and every response carries a note saying these are
+  a third party's copy, not Reddit's records nor this monitor's observations.
+- The archive caps `limit` at 100; more is collected by paging with
+  `sort=desc&before=<oldest>`. A recovery returning nothing never wipes stored
+  history. Client: the account page's **Recovered history** tab.
+
+Verified on u/Team_ThreadVerdict: 3 posts, 4 comments, and the 27 Oct post
+carries `removed_by_category: reddit` — a site-wide removal shortly before the
+ban. Tests: 451 server (1 skipped) + 57 client.
+
+**Next session:** identify *which* post/comment Reddit acted on and why — the
+`removed_by_category` field is the lead, and `archived_items` now stores it.
