@@ -39,14 +39,12 @@ alter table accounts add column if not exists fingerprint jsonb;
 -- crossing).
 alter table accounts add column if not exists early_risk_level text check (early_risk_level in ('low', 'elevated', 'high', 'critical'));
 
--- Warm-up log: one row per warm-up action performed by the scheduler.
-create table if not exists warmup_log (
-  id              uuid primary key default gen_random_uuid(),
-  account_id      uuid not null references accounts (id) on delete cascade,
-  action          text not null,
-  performed_at    timestamptz not null default now()
-);
-create index if not exists warmup_log_account_idx on warmup_log (account_id, performed_at desc);
+-- How often this account is re-checked, in minutes. Null uses the server's
+-- CHECK_INTERVAL_MINUTES. The scheduler ticks often enough for the smallest
+-- of these, so a watched account can be checked more often than the rest
+-- without raising everyone's rate.
+alter table accounts add column if not exists check_interval_minutes integer
+  check (check_interval_minutes is null or check_interval_minutes >= 15);
 
 -- One row per health check run (history for charts and trend detection).
 create table if not exists health_checks (
@@ -116,4 +114,3 @@ alter table accounts      enable row level security;
 alter table health_checks enable row level security;
 alter table content_items enable row level security;
 alter table alerts        enable row level security;
-alter table warmup_log    enable row level security;

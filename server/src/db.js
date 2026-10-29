@@ -32,6 +32,27 @@ function unwrapVotes(response, action) {
   return unwrap(response, action);
 }
 
+// The gate queue comes from its own migration, so name it when it is missing.
+function unwrapGate(response, action) {
+  const { error } = response;
+  if (error && (['42P01', 'PGRST205'].includes(error.code) || /does not exist|schema cache/i.test(error.message))) {
+    throw new HttpError(503, 'The active gate needs its table: run supabase/gate.sql in the Supabase SQL editor.');
+  }
+  return unwrap(response, action);
+}
+
+// Supabase caps every response at PAGE rows, so an export that stops at one
+// response would quietly truncate a long history. This pages to the end.
+async function readAllRows(query, action, cap = 50_000) {
+  const rows = [];
+  for (let from = 0; from < cap; from += PAGE) {
+    const page = unwrap(await query().range(from, from + PAGE - 1), action);
+    rows.push(...page);
+    if (page.length < PAGE) break;
+  }
+  return rows;
+}
+
 async function readAllPages(query, action) {
   const rows = [];
   for (let from = 0; ; from += PAGE) {
@@ -249,6 +270,22 @@ export function createSupabaseRepo(db) {
       return unwrap(await query.order('created_at', { ascending: false }).limit(limit), 'list alerts');
     },
 
+    // Records that an open alert was re-notified (src/escalation.js). The
+    // marker lives in the alert's own details jsonb rather than a column, so
+    // this works on a schema nobody has to migrate; the previous details come
+    // from the row the caller already read, which keeps it to one round trip.
+    async markAlertEscalated(id, previousDetails, atIso) {
+      const details = {
+        ...(previousDetails ?? {}),
+        escalated_at: atIso,
+        escalation_count: Number(previousDetails?.escalation_count ?? 0) + 1,
+      };
+      return unwrap(
+        await db.from('alerts').update({ details }).eq('id', id).is('acknowledged_at', null).select().maybeSingle(),
+        'mark alert escalated',
+      );
+    },
+
     async ackAlert(id) {
       unwrap(
         await db
@@ -270,27 +307,120 @@ export function createSupabaseRepo(db) {
       );
     },
 
-    async getWarmupLog(accountId, limit = 20) {
-      return unwrap(
+
+    // Everything stored about one account, paged to the end (src/export.js).
+    async exportAccountHistory(accountId) {
+      const [checks, content, alerts] = await Promise.all([
+        readAllRows(
+          () => db.from('health_checks').select('*').eq('account_id', accountId).order('checked_at', { ascending: false }),
+          'export health checks',
+        ),
+        readAllRows(
+          () => db.from('content_items').select('*').eq('account_id', accountId).order('created_at', { ascending: false }),
+          'export content items',
+        ),
+        readAllRows(
+          () => db.from('alerts').select('*').eq('account_id', accountId).order('created_at', { ascending: false }),
+          'export alerts',
+        ),
+      ]);
+      return { checks, content, alerts };
+    },
+
+    // Retention (src/retention.js). Deletes return a count only when asked
+    // for one, and a prune that cannot say how much it removed is a prune
+    // nobody can check, so every one of these passes { count: 'exact' }.
+    async pruneAccountHistory(accountId, { checksBefore, contentBefore }) {
+      const checks = await db
+        .from('health_checks')
+        .delete({ count: 'exact' })
+        .eq('account_id', accountId)
+        .lt('checked_at', checksBefore);
+      unwrap(checks, 'prune health checks');
+      const content = await db
+        .from('content_items')
+        .delete({ count: 'exact' })
+        .eq('account_id', accountId)
+        .lt('created_at', contentBefore);
+      unwrap(content, 'prune content items');
+      return { health_checks: checks.count ?? 0, content_items: content.count ?? 0 };
+    },
+
+    // The tables that are not per-account, or whose rule is not just age:
+    // an open alert is outstanding work and an unreleased gate hold is a
+    // pending action, so neither is history yet. The Shield and gate tables
+    // come from their own migrations, so a workspace that never ran them
+    // reports zero instead of failing the whole pass.
+    async pruneGlobalHistory(beforeIso) {
+      const counts = { shield_events: 0, alerts: 0, gate_queue: 0 };
+      const alerts = await db
+        .from('alerts')
+        .delete({ count: 'exact' })
+        .lt('created_at', beforeIso)
+        .not('acknowledged_at', 'is', null);
+      unwrap(alerts, 'prune acknowledged alerts');
+      counts.alerts = alerts.count ?? 0;
+      for (const [table, key, extra] of [
+        ['shield_events', 'shield_events', (q) => q],
+        ['stealth_gate_queue', 'gate_queue', (q) => q.not('released_at', 'is', null)],
+      ]) {
+        const response = await extra(db.from(table).delete({ count: 'exact' }).lt('created_at', beforeIso));
+        if (response.error) {
+          if (['42P01', 'PGRST205'].includes(response.error.code) || /does not exist|schema cache/i.test(response.error.message)) continue;
+          unwrap(response, `prune ${table}`);
+        }
+        counts[key] = response.count ?? 0;
+      }
+      return counts;
+    },
+
+    // Active gate queue (supabase/gate.sql). Held actions are durable so a
+    // restart cannot drop them and re-burst them; pacing reads the released
+    // rows' timestamps back out as its input.
+    async listGateQueue(accountId, limit = 100) {
+      return unwrapGate(
         await db
-          .from('warmup_log')
+          .from('stealth_gate_queue')
           .select('*')
           .eq('account_id', accountId)
-          .order('performed_at', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(limit),
-        'load warmup log',
+        'load gate queue',
       );
     },
 
-    async insertWarmupLog(accountId, action) {
-      return unwrap(
-        await db.from('warmup_log').insert({ account_id: accountId, action }).select().single(),
-        'save warmup log',
+    async getGateQueue(id) {
+      return unwrapGate(
+        await db.from('stealth_gate_queue').select('*').eq('id', id).maybeSingle(),
+        'load gate queue row',
       );
     },
 
-    async clearWarmupLog(accountId) {
-      unwrap(await db.from('warmup_log').delete().eq('account_id', accountId), 'clear warmup log');
+    async createGateQueue(fields) {
+      return unwrapGate(
+        await db.from('stealth_gate_queue').insert(fields).select().single(),
+        'queue a gated action',
+      );
+    },
+
+    // Releases an unreleased row only: the .is() guard makes a double release
+    // return no rows (and so throw) instead of re-stamping a released one and
+    // handing the pacing budget a second slot.
+    async releaseGateQueue(id, releasedReason) {
+      return unwrapGate(
+        await db
+          .from('stealth_gate_queue')
+          .update({ released_at: new Date().toISOString(), released_reason: releasedReason })
+          .eq('id', id)
+          .is('released_at', null)
+          .select()
+          .single(),
+        'release a gated action',
+      );
+    },
+
+    async clearGateQueue(accountId) {
+      unwrapGate(await db.from('stealth_gate_queue').delete().eq('account_id', accountId), 'clear gate queue');
     },
 
     // Vote history (supabase/votes.sql). An import is the account's complete

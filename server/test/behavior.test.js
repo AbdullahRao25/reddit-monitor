@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { behaviorFactors, localHourIn, midnightShare } from '../src/behavior.js';
+import { localHourIn, midnightShare } from '../src/behavior.js';
 import { assessRisk } from '../src/risk.js';
 import { DAY, HOUR, NOW, healthyProfile } from './helpers.js';
 

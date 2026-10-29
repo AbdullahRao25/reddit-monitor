@@ -107,7 +107,9 @@ SUPABASE_ANON_KEY=<anon key>
 REDDIT_MODE=html
 CHECK_INTERVAL_MINUTES=60
 
-# Who may sign in. Start with your own address and add teammates here.
+# Teammates are invited from the dashboard (Settings -> Team access), so this
+# list is just the owners: the people who may invite and remove others.
+AUTH_ADMIT_INVITED=true
 AUTH_ALLOWED_EMAILS=you@example.com
 # Filled in at step 5, once Netlify has given you a URL.
 ALLOWED_ORIGINS=
@@ -205,18 +207,33 @@ ALLOWED_ORIGINS=https://your-site.netlify.app
 docker compose up -d api    # recreates the container so the new value is read
 ```
 
-Then open your Netlify URL. You should get the sign-in screen, be able to sign
-in with GitHub, and land in the dashboard with your accounts loaded.
+Then open your Netlify URL. You should get the sign-in screen, ask for a
+sign-in link by email (or use GitHub), and land in the dashboard with your
+accounts loaded.
 
 If the dashboard loads but data does not, open the browser console. A CORS
 error means `ALLOWED_ORIGINS` does not exactly match your Netlify origin
-(no trailing slash). A 403 means your email is not in `AUTH_ALLOWED_EMAILS`.
+(no trailing slash). A 403 means that address has no access — see below.
 
 ### Adding a teammate
 
-Add their address to `AUTH_ALLOWED_EMAILS` (comma-separated) and run
-`docker compose up -d api`. Nothing else. They sign in with GitHub and share
-the same workspace.
+Settings -> Team access -> invite them by email. They get a sign-in link, and
+that is the whole of it: no `.env` edit, no redeploy, no restart. Removing them
+there revokes access on their next request.
+
+This works because `AUTH_ADMIT_INVITED=true` admits anyone Supabase reports as
+invited (`invited_at`), which a self-signup never has — so leaving public
+sign-ups enabled in Supabase does not open the workspace.
+
+`AUTH_ALLOWED_EMAILS` still admits the addresses listed in it. Keep your own
+there: owners are defined by that list, only owners can invite or remove, and
+it is the way back in if the Supabase user list is ever lost.
+
+> **Set up custom SMTP before inviting more than one or two people.** Supabase's
+> built-in email sender allows only a few messages an hour and is not meant for
+> production, so invites simply stop arriving. Project Settings ->
+> Authentication -> SMTP. An invite refused for this reason returns 429 and says
+> so.
 
 ---
 

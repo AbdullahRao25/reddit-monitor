@@ -10,7 +10,8 @@
     "demo": "concurrently -n demo,client -c blue,magenta \"npm run demo -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client",
     "start": "npm start -w server",
-    "test": "npm test -w server",
+    "test": "npm test -w server && npm run test:frontend-api",
+    "test:server": "npm test -w server",
     "test:frontend-api": "node --test client/test/*.test.js"
   },
   "devDependencies": {

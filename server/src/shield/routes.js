@@ -1,11 +1,10 @@
 import { HttpError } from '../errors.js';
 import { analyzeActivity, assessReadiness, scanDraft } from '../preventer/engine.js';
 import { collisionsFor, decisionFor, transitionFor } from './policy.js';
+import { isPlainObject as isPlain, UUID_RE } from '../routeGuards.js';
 
-const UUID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 function invalid(message,status=400) {throw new HttpError(status,message);}
-function requireUUID(value,description='ID') {if(!UUID.test(String(value||'')))invalid(`Invalid ${description}.`);return value;}
-function isPlain(value) {return !!value&&typeof value==='object'&&!Array.isArray(value);}
+function requireUUID(value,description='ID') {if(!UUID_RE.test(String(value||'')))invalid(`Invalid ${description}.`);return value;}
 function draftInput(body) {
   if(!isPlain(body))invalid('Enter a draft object.');
   const account_id=requireUUID(body.accountId,'account ID');

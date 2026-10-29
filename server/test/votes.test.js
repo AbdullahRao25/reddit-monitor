@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import test from 'node:test';
-import { createApp } from '../src/app.js';
 import { parseCsv, parsePermalink, parseVoteCsv, sharedVotesFor, summarizeVotes } from '../src/votes.js';
-import { createMemoryRepo, silentLog } from './helpers.js';
+import { createMemoryRepo } from './helpers.js';
+import { withServer } from './harness.js';
 
 // Shaped like the files in Reddit's data export.
 const POST_VOTES = [
@@ -114,91 +113,68 @@ test('sharedVotesFor lists only items this account and another account both vote
   assert.deepEqual(shared[0].others, [{ account_id: 'b', username: 'second_acct', direction: 'up' }]);
 });
 
-async function withServer(repo, fn) {
-  const app = createApp({
-    repo,
-    reddit: { verify: async () => {} },
-    checker: { isChecking: () => false, checkAccount: async () => null },
-    scheduler: { status: () => ({}), trigger: () => true },
-    log: silentLog,
-  });
-  const server = app.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const base = `http://127.0.0.1:${server.address().port}/api`;
-  const call = async (method, path, { csv } = {}) => {
-    const res = await fetch(base + path, {
-      method,
-      headers: csv === undefined ? {} : { 'Content-Type': 'text/csv' },
-      body: csv,
-    });
-    const text = await res.text();
-    return { status: res.status, body: text ? JSON.parse(text) : null };
-  };
-  try {
-    await fn(call);
-  } finally {
-    server.close();
-  }
-}
 
 test('votes API: import both files, list, filter, re-import, shared votes and clearing', async () => {
   const repo = createMemoryRepo();
   const one = await repo.createAccount({ username: 'first_acct' });
   const two = await repo.createAccount({ username: 'second_acct' });
-  await withServer(repo, async (call) => {
-    const empty = await call('GET', `/accounts/${one.id}/votes`);
+  await withServer({ repo }, async (call) => {
+    const empty = await call('GET', `/api/accounts/${one.id}/votes`);
     assert.equal(empty.status, 200);
     assert.equal(empty.body.summary.total, 0);
     assert.equal(empty.body.last_imported_at, null);
 
-    const posts = await call('POST', `/accounts/${one.id}/votes/import?kind=post`, { csv: POST_VOTES });
+    const posts = await call('POST', `/api/accounts/${one.id}/votes/import?kind=post`, POST_VOTES, 'text/csv');
     assert.equal(posts.status, 200);
     assert.deepEqual([posts.body.imported, posts.body.removed], [3, 0]);
-    const comments = await call('POST', `/accounts/${one.id}/votes/import?kind=comment`, { csv: COMMENT_VOTES });
+    const comments = await call('POST', `/api/accounts/${one.id}/votes/import?kind=comment`, COMMENT_VOTES, 'text/csv');
     assert.equal(comments.body.summary.total, 5);
 
-    const all = await call('GET', `/accounts/${one.id}/votes`);
+    const all = await call('GET', `/api/accounts/${one.id}/votes`);
     assert.deepEqual({ up: all.body.summary.up, down: all.body.summary.down }, { up: 4, down: 1 });
     assert.ok(all.body.last_imported_at);
-    const downs = await call('GET', `/accounts/${one.id}/votes?direction=down`);
+    const downs = await call('GET', `/api/accounts/${one.id}/votes?direction=down`);
     assert.deepEqual(downs.body.votes.map((v) => v.item_id), ['t3_abc124']);
     assert.equal(downs.body.matching, 1);
-    const onComments = await call('GET', `/accounts/${one.id}/votes?kind=comment`);
+    const onComments = await call('GET', `/api/accounts/${one.id}/votes?kind=comment`);
     assert.deepEqual(onComments.body.votes.map((v) => v.item_id).sort(), ['t1_c1', 't1_c2']);
 
     // A newer export without a vote means it was taken back; other kinds stay.
-    const reimport = await call('POST', `/accounts/${one.id}/votes/import?kind=post`, {
-      csv: POST_VOTES.split('\n').slice(0, 2).join('\n'),
-    });
+    const reimport = await call(
+      'POST',
+      `/api/accounts/${one.id}/votes/import?kind=post`,
+      POST_VOTES.split('\n').slice(0, 2).join('\n'),
+      'text/csv',
+    );
     assert.deepEqual([reimport.body.imported, reimport.body.removed], [1, 2]);
     assert.deepEqual({ posts: reimport.body.summary.posts, comments: reimport.body.summary.comments }, { posts: 1, comments: 2 });
 
     // Another monitored account voting on the same post is flagged on both.
-    await call('POST', `/accounts/${two.id}/votes/import?kind=post`, { csv: POST_VOTES });
-    const shared = await call('GET', `/accounts/${one.id}/votes`);
+    await call('POST', `/api/accounts/${two.id}/votes/import?kind=post`, POST_VOTES, 'text/csv');
+    const shared = await call('GET', `/api/accounts/${one.id}/votes`);
     assert.deepEqual(shared.body.shared.map((s) => [s.item_id, s.others[0].username]), [['t3_abc123', 'second_acct']]);
 
-    assert.equal((await call('DELETE', `/accounts/${one.id}/votes`)).status, 204);
-    assert.equal((await call('GET', `/accounts/${one.id}/votes`)).body.summary.total, 0);
-    assert.equal((await call('GET', `/accounts/${two.id}/votes`)).body.shared.length, 0);
+    assert.equal((await call('DELETE', `/api/accounts/${one.id}/votes`)).status, 204);
+    assert.equal((await call('GET', `/api/accounts/${one.id}/votes`)).body.summary.total, 0);
+    assert.equal((await call('GET', `/api/accounts/${two.id}/votes`)).body.shared.length, 0);
   });
 });
 
 test('votes API refuses files that would silently wipe stored votes', async () => {
   const repo = createMemoryRepo();
   const account = await repo.createAccount({ username: 'first_acct' });
-  await withServer(repo, async (call) => {
-    await call('POST', `/accounts/${account.id}/votes/import?kind=post`, { csv: POST_VOTES });
+  await withServer({ repo }, async (call) => {
+    await call('POST', `/api/accounts/${account.id}/votes/import?kind=post`, POST_VOTES, 'text/csv');
 
     // The comment file uploaded as posts: every row mismatches, nothing is replaced.
-    const wrongKind = await call('POST', `/accounts/${account.id}/votes/import?kind=post`, { csv: COMMENT_VOTES });
+    const wrongKind = await call('POST', `/api/accounts/${account.id}/votes/import?kind=post`, COMMENT_VOTES, 'text/csv');
     assert.equal(wrongKind.status, 400);
     assert.match(wrongKind.body.error, /None of the 2 rows could be imported \(2 × a comment link in the post-votes file\)/);
     assert.equal(repo.votes.size, 3);
 
-    assert.equal((await call('POST', `/accounts/${account.id}/votes/import`, { csv: POST_VOTES })).status, 400);
-    assert.equal((await call('POST', `/accounts/${account.id}/votes/import?kind=post`, { csv: 'a,b\n1,2' })).status, 400);
-    assert.equal((await call('GET', '/accounts/00000000-0000-4000-8000-000000000000/votes')).status, 404);
+    assert.equal((await call('POST', `/api/accounts/${account.id}/votes/import`, POST_VOTES, 'text/csv')).status, 400);
+    assert.equal((await call('POST', `/api/accounts/${account.id}/votes/import?kind=post`, 'a,b\n1,2', 'text/csv')).status, 400);
+    assert.equal((await call('GET', '/api/accounts/00000000-0000-4000-8000-000000000000/votes')).status, 404);
 
     // Deleting the account takes its votes with it.
     await repo.deleteAccount(account.id);

@@ -3,9 +3,9 @@
 // With no auth the API trusts every caller, which is only safe on localhost.
 // Once it is reachable on the internet, every /api route must prove the
 // caller is a signed-in user, or anyone could add/remove accounts and read
-// everything. The dashboard signs in with Supabase Auth (Google) and sends
-// the user's access token as `Authorization: Bearer <token>`; this verifies
-// it and, optionally, checks the email against an allowlist.
+// everything. The dashboard signs in with Supabase Auth (a magic link, or
+// GitHub) and sends the user's access token as `Authorization: Bearer
+// <token>`; this verifies it and checks the user may enter this workspace.
 //
 // Verification goes through Supabase (auth.getUser), which validates the token
 // whatever algorithm the project signs with, so this needs no JWT secret and
@@ -19,34 +19,47 @@ const CACHE_MAX = 2000;
 
 /**
  * deps:
- *   verifyToken(token) -> { id, email } | null   (injectable; see supabaseVerifier)
+ *   verifyToken(token) -> { id, email, invitedAt } | null   (injectable; see supabaseVerifier)
  *   allowedEmails: string[]   exact addresses admitted
  *   allowedDomain: string     everyone at this email domain is admitted
+ *   admitInvited: boolean     admit anyone invited from Supabase -> Authentication -> Users
  *   allowAny: boolean         admit any validly signed-in user (open sign-up)
  * Returns an Express middleware.
  */
-export function createAuth({ verifyToken, allowedEmails = [], allowedDomain = '', allowAny = false, log = console }) {
+export function createAuth({
+  verifyToken,
+  allowedEmails = [],
+  allowedDomain = '',
+  admitInvited = false,
+  allowAny = false,
+  log = console,
+}) {
   const emails = new Set(allowedEmails.map((email) => String(email).trim().toLowerCase()).filter(Boolean));
   const domain = String(allowedDomain).trim().toLowerCase().replace(/^@/, '');
   const cache = new Map(); // token -> { user, at }
 
   if (allowAny) {
     log.warn?.(
-      'AUTH_ALLOW_ANY is on: any Google account that signs in gets full access. ' +
-        'Set AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_DOMAIN to restrict it to your team.',
+      'AUTH_ALLOW_ANY is on: any account that can sign in gets full access. ' +
+        'Set AUTH_ADMIT_INVITED, AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_DOMAIN to restrict it to your team.',
     );
-  } else if (emails.size === 0 && !domain) {
+  } else if (emails.size === 0 && !domain && !admitInvited) {
     log.warn?.(
-      'No access list set (AUTH_ALLOWED_EMAILS / AUTH_ALLOWED_DOMAIN) and AUTH_ALLOW_ANY is off, ' +
-        'so no one can sign in. Add at least your own email.',
+      'No access rule set (AUTH_ADMIT_INVITED / AUTH_ALLOWED_EMAILS / AUTH_ALLOWED_DOMAIN) and ' +
+        'AUTH_ALLOW_ANY is off, so no one can sign in. Add at least your own email.',
     );
   }
 
-  function admitted(email) {
+  function admitted(user) {
     if (allowAny) return true;
-    const value = String(email ?? '').toLowerCase();
+    const value = String(user?.email ?? '').toLowerCase();
     if (emails.has(value)) return true;
     if (domain && value.endsWith(`@${domain}`)) return true;
+    // Invited from Supabase -> Authentication -> Users -> Invite user, which
+    // is how a teammate is added: no redeploy, and revoking is deleting the
+    // user there. invited_at is set only by an invite, never by a self-signup,
+    // so this stays closed even if the project has public sign-ups left on.
+    if (admitInvited && user?.invitedAt) return true;
     return false;
   }
 
@@ -68,8 +81,8 @@ export function createAuth({ verifyToken, allowedEmails = [], allowedDomain = ''
         cache.set(token, entry);
       }
 
-      if (!admitted(entry.user.email)) {
-        throw new HttpError(403, `${entry.user.email} is not on the access list for this workspace.`);
+      if (!admitted(entry.user)) {
+        throw new HttpError(403, `${entry.user.email} does not have access to this workspace.`);
       }
       req.user = entry.user;
       next();
@@ -86,6 +99,8 @@ export function supabaseVerifier(createClient, { url, anonKey }) {
   return async function verifyToken(token) {
     const { data, error } = await client.auth.getUser(token);
     if (error || !data?.user?.email) return null;
-    return { id: data.user.id, email: data.user.email };
+    // invited_at is absent for anyone who signed themselves up; admitInvited
+    // leans on that, so pass it through rather than just the identity.
+    return { id: data.user.id, email: data.user.email, invitedAt: data.user.invited_at ?? null };
   };
 }

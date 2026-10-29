@@ -27,6 +27,15 @@ RUN npm ci --omit=dev
 # into the default location where playwright-core looks for it.
 # If this ever fails on your architecture, install the distro's chromium with
 # apt instead and point REDDIT_BROWSER_PATH at it.
+# For REDDIT_BROWSER_ENGINE=patchright, also install its browser (it keeps its
+# own registry) and, ideally, real Google Chrome — Patchright rates bundled
+# Chromium as the weaker option and this image has no Chrome, so it falls back
+# with a warning. Uncomment if you use that engine:
+# RUN npx --yes patchright install --with-deps chromium
+# For REDDIT_BROWSER_ENGINE=camoufox, install camoufox-js and fetch its Firefox
+# build; it needs a toolchain for better-sqlite3, so check it builds on arm64:
+# RUN npm install camoufox-js && npx camoufox-js fetch
+
 RUN npx --yes playwright@"$(node -p "require('playwright-core/package.json').version")" install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 

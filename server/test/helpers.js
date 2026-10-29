@@ -17,11 +17,11 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
   const checks = [];
   const content = new Map();
   const alerts = [];
-  const warmupLog = new Map();
   const preventionProfiles = new Map();
   const preventionReviews=new Map();
   const votes = new Map(); // `${account_id}|${item_id}` -> account_votes row
   const shieldDrafts=new Map(),shieldHolds=new Map(),shieldEvents=[],shieldOutcomes=[],shieldIncidents=new Map();
+  const gateQueue=new Map(); // stealth_gate_queue rows, keyed by id
   const withAccount = (alert) => ({ ...alert, account: { username: accounts.get(alert.account_id)?.username } });
   const newestFirst = (key) => (a, b) => String(b[key]).localeCompare(String(a[key]));
 
@@ -30,11 +30,47 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
     checks,
     content,
     alerts,
-    warmupLog,
     preventionProfiles,
     votes,
 
     shieldDrafts,shieldHolds,shieldEvents,shieldOutcomes,shieldIncidents,
+    gateQueue,
+    // Mirror of db.js exportAccountHistory (src/export.js).
+    async exportAccountHistory(accountId) {
+      return {
+        checks: checks.filter((row) => row.account_id === accountId).sort(newestFirst('checked_at')).map((row) => ({ ...row })),
+        content: [...content.values()].filter((row) => row.account_id === accountId).sort(newestFirst('created_at')).map((row) => ({ ...row })),
+        alerts: alerts.filter((row) => row.account_id === accountId).sort(newestFirst('created_at')).map((row) => ({ ...row })),
+      };
+    },
+    // Mirror of db.js retention methods (src/retention.js).
+    async pruneAccountHistory(accountId,{checksBefore,contentBefore}) {
+      const counts={health_checks:0,content_items:0};
+      for(let i=checks.length-1;i>=0;i--) {
+        const row=checks[i];
+        if(row.account_id===accountId&&String(row.checked_at)<String(checksBefore)){checks.splice(i,1);counts.health_checks++;}
+      }
+      for(const [key,row] of content) {
+        if(row.account_id===accountId&&String(row.created_at)<String(contentBefore)){content.delete(key);counts.content_items++;}
+      }
+      return counts;
+    },
+    async pruneGlobalHistory(beforeIso) {
+      const counts={shield_events:0,alerts:0,gate_queue:0};
+      for(let i=shieldEvents.length-1;i>=0;i--)if(String(shieldEvents[i].created_at)<String(beforeIso)){shieldEvents.splice(i,1);counts.shield_events++;}
+      // Only acknowledged alerts: an open one is work somebody still owes.
+      for(let i=alerts.length-1;i>=0;i--)if(alerts[i].acknowledged_at&&String(alerts[i].created_at)<String(beforeIso)){alerts.splice(i,1);counts.alerts++;}
+      // Only released rows: an unreleased hold is a pending action.
+      for(const [id,row] of gateQueue)if(row.released_at&&String(row.created_at)<String(beforeIso)){gateQueue.delete(id);counts.gate_queue++;}
+      return counts;
+    },
+    // Mirror of db.js stealth_gate_queue methods.
+    async listGateQueue(accountId,limit=100) {return [...gateQueue.values()].filter(r=>r.account_id===accountId).sort(newestFirst('created_at')).slice(0,limit).map(r=>({...r}));},
+    async getGateQueue(id) {const row=gateQueue.get(id);return row?{...row}:null;},
+    async createGateQueue(fields) {const row={payload:null,verdict:'hold',reasons:[],next_safe_at:null,token:randomUUID(),...fields,id:randomUUID(),created_at:iso(),released_at:null,released_reason:null};gateQueue.set(row.id,row);return {...row};},
+    // Like db.js's .is('released_at', null) guard: a second release finds no row.
+    async releaseGateQueue(id,releasedReason) {const previous=gateQueue.get(id);if(!previous||previous.released_at)throw new Error('Database error while trying to release a gated action: no rows returned');const row={...previous,released_at:iso(),released_reason:releasedReason};gateQueue.set(id,row);return {...row};},
+    async clearGateQueue(accountId) {for(const [id,row] of gateQueue)if(row.account_id===accountId)gateQueue.delete(id);},
     async listShieldDrafts(limit=150) {return [...shieldDrafts.values()].sort(newestFirst('created_at')).slice(0,limit);},
     async getShieldDraft(id) {return shieldDrafts.get(id)??null;},
     async createShieldDraft(fields) {const row={...fields,id:randomUUID(),created_at:iso(),updated_at:iso()};shieldDrafts.set(row.id,row);return {...row};},
@@ -88,6 +124,7 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
         last_seen_active_at: null,
         stealth_mode: false,
         fingerprint: null,
+        check_interval_minutes: null,
         early_risk_level: null,
         created_at: iso(),
         ...fields,
@@ -112,7 +149,7 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
       for (const list of [checks, alerts, shieldEvents, shieldOutcomes]) {
         for (let i = list.length - 1; i >= 0; i--) if (owned(list[i])) list.splice(i, 1);
       }
-      for (const map of [content, warmupLog, votes, shieldDrafts, shieldHolds, shieldIncidents]) {
+      for (const map of [content, votes, shieldDrafts, shieldHolds, shieldIncidents, gateQueue]) {
         for (const [key, row] of map) if (owned(row)) map.delete(key);
       }
     },
@@ -176,26 +213,24 @@ export function createMemoryRepo({ now = () => Date.now() } = {}) {
         .slice(0, limit)
         .map(withAccount);
     },
+    // Mirror of db.js markAlertEscalated.
+    async markAlertEscalated(id, previousDetails, atIso) {
+      const alert = alerts.find((row) => row.id === id);
+      if (!alert || alert.acknowledged_at) return null;
+      alert.details = {
+        ...(previousDetails ?? {}),
+        escalated_at: atIso,
+        escalation_count: Number(previousDetails?.escalation_count ?? 0) + 1,
+      };
+      return { ...alert };
+    },
+
     async ackAlert(id) {
       const row = alerts.find((alert) => alert.id === id);
       if (row && !row.acknowledged_at) row.acknowledged_at = iso();
     },
     async ackAllAlerts() {
       for (const row of alerts) if (!row.acknowledged_at) row.acknowledged_at = iso();
-    },
-    async getWarmupLog(accountId, limit = 20) {
-      return [...warmupLog.values()]
-        .filter((row) => row.account_id === accountId)
-        .sort(newestFirst('performed_at'))
-        .slice(0, limit);
-    },
-    async insertWarmupLog(accountId, action) {
-      const row = { id: randomUUID(), account_id: accountId, action, performed_at: iso() };
-      warmupLog.set(row.id, row);
-      return { ...row };
-    },
-    async clearWarmupLog(accountId) {
-      for (const [key, row] of warmupLog) if (row.account_id === accountId) warmupLog.delete(key);
     },
     async replaceAccountVotes(accountId, kind, rows, importedAt) {
       for (const row of rows) {

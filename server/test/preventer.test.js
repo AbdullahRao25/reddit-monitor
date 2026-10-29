@@ -62,13 +62,20 @@ test('prevention onboarding storage mirrors production repository interface',asy
 });
 
 // Integration: exercise the real Express route wiring with the in-memory test repo.
+//
+// The route lets assessReadiness use the live clock (preventionContext passes
+// no `now`), so this test's fixtures are dated against Date.now() rather than
+// the frozen NOW the pure-function tests above use. Dated at NOW they would
+// read as ready until NOW+7d and as 'review' (stale_check) forever after —
+// a test that passes only in the week it was written.
 test('API prevents invalid drafts, persists onboarding and performs a read-only scan',async(t)=>{
   let createApp;
   try{({createApp}=await import('../src/app.js'));}catch(err){if(err.code==='ERR_MODULE_NOT_FOUND'){t.skip('express package not installed');return;}throw err;}
-  const repo=createMemoryRepo({now:()=>NOW});
+  const live=Date.now();
+  const repo=createMemoryRepo({now:()=>live});
   const account=await repo.createAccount({username:'tester'});
-  await repo.updateAccount(account.id,{...active(),id:account.id});
-  await repo.insertCheck({account_id:account.id,...checked()[0]});
+  await repo.updateAccount(account.id,{...active(),id:account.id,last_checked_at:new Date(live).toISOString()});
+  await repo.insertCheck({account_id:account.id,checked_at:new Date(live).toISOString(),account_created_at:new Date(live-300*DAY).toISOString()});
   const app=createApp({repo,reddit:{verify:async()=>{}},checker:{isChecking:()=>false},scheduler:{status:()=>({running:false}),trigger:()=>true},log:{error:()=>{}}});
   const server=app.listen(0,'127.0.0.1');
   await new Promise(resolve=>server.once('listening',resolve));

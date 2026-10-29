@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import test from 'node:test';
-import { createApp, normalizeUsername } from '../src/app.js';
-import { createMemoryRepo, silentLog } from './helpers.js';
+import { normalizeUsername } from '../src/app.js';
+import { createMemoryRepo } from './helpers.js';
+import { withServer } from './harness.js';
 
 function fakeChecker() {
   const checked = [];
@@ -26,26 +26,6 @@ const fakeScheduler = () => ({
   status: () => ({ running: false, lastRunAt: null, nextRunAt: null, intervalMinutes: 60 }),
 });
 
-async function withServer(deps, fn) {
-  const app = createApp({ log: silentLog, ...deps });
-  const server = app.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body) => {
-    const res = await fetch(base + path, {
-      method,
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
-    });
-    const text = await res.text();
-    return { status: res.status, body: text ? JSON.parse(text) : null };
-  };
-  try {
-    await fn(call);
-  } finally {
-    server.close();
-  }
-}
 
 const configured = () => {
   const repo = createMemoryRepo();

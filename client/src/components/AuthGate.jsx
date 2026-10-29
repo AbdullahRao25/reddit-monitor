@@ -1,12 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { authReady, onAuthChange, signInWithGitHub, signOut } from '../lib/auth.js';
+import { authReady, onAuthChange, signInWithEmail, signInWithGitHub, signOut } from '../lib/auth.js';
 
 // Wraps the app in a sign-in gate. When auth isn't configured (local dev / the
 // test build), it renders the app straight through so nothing changes there.
-// Otherwise it shows a sign-in screen until a GitHub session exists, then
-// renders the app and hands it { user, signOut }.
+// Otherwise it shows a sign-in screen until a session exists, then renders the
+// app and hands it { user, signOut }.
+//
+// Sign-in is a magic link, so adding a teammate is inviting them in Supabase
+// rather than editing config and restarting the server. GitHub is kept as a
+// second way in for anyone who already uses it.
 export default function AuthGate({ children }) {
   const [state, setState] = useState(authReady ? { phase: 'loading' } : { phase: 'open' });
+  const [email, setEmail] = useState('');
+  const [link, setLink] = useState({ status: 'idle' });
 
   useEffect(() => {
     if (!authReady) return undefined;
@@ -23,6 +29,15 @@ export default function AuthGate({ children }) {
   if (state.phase === 'open') return children(null);
   if (state.phase === 'in') return children({ user: state.user, signOut });
 
+  async function sendLink(event) {
+    event.preventDefault();
+    const address = email.trim();
+    if (!address) return;
+    setLink({ status: 'sending' });
+    const result = await signInWithEmail(address);
+    setLink(result.ok ? { status: 'sent' } : { status: 'error', error: result.error });
+  }
+
   return (
     <div style={S.screen}>
       <div style={S.card}>
@@ -33,11 +48,39 @@ export default function AuthGate({ children }) {
         <p style={S.sub}>Sign in to open your account monitoring workspace.</p>
         {state.phase === 'loading' ? (
           <div style={S.loading}>Checking your session…</div>
+        ) : link.status === 'sent' ? (
+          // Deliberately the same message whether or not the address is known,
+          // so this screen can't be used to find out who is on the team.
+          <div style={S.sent}>
+            <strong style={S.sentHead}>Check your inbox</strong>
+            If {email.trim()} has been invited to this workspace, a sign-in link is on its way. It expires in an hour.
+            <button style={S.again} onClick={() => setLink({ status: 'idle' })} type="button">Use a different address</button>
+          </div>
         ) : (
-          <button style={S.btn} onClick={() => signInWithGitHub()} type="button">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-          Sign in with GitHub
-        </button>
+          <>
+            <form onSubmit={sendLink}>
+              <input
+                style={S.input}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                aria-label="Email address"
+                autoComplete="email"
+                autoFocus
+                required
+              />
+              <button style={S.primary} type="submit" disabled={link.status === 'sending'}>
+                {link.status === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
+              </button>
+            </form>
+            {link.status === 'error' && <p style={S.error}>{link.error}</p>}
+            <div style={S.or}><span style={S.orText}>or</span></div>
+            <button style={S.btn} onClick={() => signInWithGitHub()} type="button">
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+              Sign in with GitHub
+            </button>
+          </>
         )}
         <p style={S.foot}>Access is limited to the people your workspace admits.</p>
       </div>
@@ -53,5 +96,13 @@ const S = {
   sub: { margin: '10px 0 24px', color: 'var(--muted,#9aa4bc)', fontSize: '14px', lineHeight: 1.6 },
   btn: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '10px', width: '100%', padding: '12px 16px', borderRadius: '10px', border: '1px solid var(--line,#272e40)', background: 'var(--surface-2,#171b28)', color: 'var(--ink,#e9ecf6)', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
   loading: { padding: '12px', color: 'var(--muted,#9aa4bc)', fontSize: '14px' },
+  input: { width: '100%', boxSizing: 'border-box', padding: '12px 14px', marginBottom: '10px', borderRadius: '10px', border: '1px solid var(--line,#272e40)', background: 'var(--bg,#0a0c13)', color: 'var(--ink,#e9ecf6)', fontSize: '14px', fontFamily: 'inherit' },
+  primary: { width: '100%', padding: '12px 16px', borderRadius: '10px', border: '1px solid transparent', background: 'var(--purple,#8f7ff0)', color: '#fff', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
+  or: { display: 'flex', alignItems: 'center', margin: '18px 0', color: 'var(--subtle,#6c768f)', fontSize: '12px' },
+  orText: { flex: '0 0 auto', padding: '0 10px', margin: '0 auto', borderTop: 0 },
+  error: { margin: '12px 0 0', color: 'var(--red,#f98080)', fontSize: '13px', lineHeight: 1.5 },
+  sent: { padding: '16px', borderRadius: '10px', border: '1px solid var(--line,#272e40)', background: 'var(--surface-2,#171b28)', color: 'var(--muted,#9aa4bc)', fontSize: '13px', lineHeight: 1.6, textAlign: 'left' },
+  sentHead: { display: 'block', marginBottom: '6px', color: 'var(--ink,#e9ecf6)', fontSize: '14px' },
+  again: { display: 'block', marginTop: '12px', padding: 0, border: 0, background: 'none', color: 'var(--purple-2,#ab9bff)', fontSize: '13px', cursor: 'pointer', fontFamily: 'inherit' },
   foot: { margin: '20px 0 0', color: 'var(--subtle,#6c768f)', fontSize: '12px', lineHeight: 1.6 },
 };

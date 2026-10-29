@@ -1,15 +1,12 @@
 import { HttpError } from '../errors.js';
 import { analyzeActivity } from '../preventer/engine.js';
 import { assessHealthTrend, buildSafetyPlan, summarizeScoreProvenance } from './ops.js';
+import { accountRequirer, UUID_RE } from '../routeGuards.js';
 
-const UUID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const fail=(status,message)=>{throw new HttpError(status,message);};
-const validAccount=async(repo,id)=>{
-  if(!UUID.test(String(id)))fail(404,'Account not found');
-  const a=await repo.getAccount(id);
-  if(!a)fail(404,'Account not found');
-  return a;
-};
+// Same rule as everywhere else: a malformed id and an unknown one are both a
+// plain 404 (see routeGuards.js).
+const validAccount=(repo,id)=>accountRequirer(repo)(id);
 async function detail(repo,account){
   const since=new Date(Date.now()-30*86400000).toISOString();
   const [checks,items,hold,queued]=await Promise.all([
@@ -53,7 +50,7 @@ export function registerPreventionOperationsRoutes(app,{repo}){
     if(reason.length<10||reason.length>500)fail(400,'Enter a review reason of 10–500 characters.');
     const draftId=req.body?.draftId??null;
     if(draftId!==null){
-      if(!UUID.test(String(draftId)))fail(400,'Invalid draft ID.');
+      if(!UUID_RE.test(String(draftId)))fail(400,'Invalid draft ID.');
       const draft=await repo.getShieldDraft(draftId);
       if(!draft||draft.account_id!==account.id)fail(404,'Draft not found on this account.');
     }
@@ -62,7 +59,7 @@ export function registerPreventionOperationsRoutes(app,{repo}){
   });
   app.post('/api/accounts/:id/prevention/reviews/:reviewId/:action',async(req,res)=>{
     const account=await validAccount(repo,req.params.id);
-    const review=UUID.test(String(req.params.reviewId))?await repo.getPreventionReview(req.params.reviewId):null;
+    const review=UUID_RE.test(String(req.params.reviewId))?await repo.getPreventionReview(req.params.reviewId):null;
     if(!review||review.account_id!==account.id)fail(404,'Review item not found.');
     if(review.state!=='held')fail(409,'This review has already been completed.');
     const action=String(req.params.action);

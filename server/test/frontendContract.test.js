@@ -1,7 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../src/app.js';
-import { createMemoryRepo, createFakeReddit, silentLog } from './helpers.js';
 import { classifyRemoval } from '../src/content.js';
 import { assessEarlyRisk } from '../src/stealth/earlyRisk.js';
 

@@ -2,14 +2,18 @@ import path from 'node:path';
 import express from 'express';
 import { checkLiveProfile } from './checker.js';
 import { HttpError } from './errors.js';
+import { accountRequirer, cleanText, UUID_RE } from './routeGuards.js';
 import { fingerprintFields, validateFingerprint, suggestFingerprint } from './stealth/fingerprint.js';
-import { createWarmupPlan, warmupProgress } from './stealth/warmup.js';
+import { EXPORT_COLUMNS, EXPORT_TABLES, accountBundle, exportFilename, toCsv } from './export.js';
+import { DEFAULT_WINDOW_DAYS, concentration, mergeSubredditSummaries, summarizeSubreddits } from './subreddits.js';
 import { analyzeActivity, assessReadiness, scanDraft } from './preventer/engine.js';
 import { registerShieldRoutes } from './shield/routes.js';
 import { registerPreventionOperationsRoutes } from './prevention/routes.js';
+import { registerGateRoutes } from './stealth/gateRoutes.js';
 import { VOTE_KINDS, parseVoteCsv, sharedVotesFor, summarizeVotes, voteOrder } from './votes.js';
+import { readerErrorDetails } from './readerErrors.js';
+import { registerReaderVerificationRoutes } from './readerVerification.js';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
 
 // Accepts "name", "u/name", "/u/name" or a profile URL.
@@ -19,12 +23,6 @@ export function normalizeUsername(input) {
     .replace(/^https?:\/\/(?:[a-z]+\.)?reddit\.com/i, '')
     .replace(/^\/?(?:u|user)\//i, '')
     .replace(/[/?#].*$/, '');
-}
-
-function cleanText(value, max) {
-  if (value === undefined || value === null) return null;
-  const text = String(value).trim();
-  return text ? text.slice(0, max) : null;
 }
 
 /**
@@ -37,11 +35,17 @@ export function createApp({
   reddit,
   checker,
   scheduler,
+  // History pruning (src/retention.js). Optional: absent in tests and in
+  // demo mode, where nothing is persisted to prune.
+  retention = null,
   missing = [],
   clientDist = null,
   // Gate for /api: defaults to open so local dev and the test suite need no
   // auth; a real deployment passes the middleware from createAuth().
   auth = (req, res, next) => next(),
+  // The team, from Supabase Auth (see members.js). Absent when the server has
+  // no service-role key, in which case /api/members answers 503.
+  members = null,
   // Browser origins allowed to call the API cross-origin (the Netlify site).
   corsOrigins = [],
   log = console,
@@ -81,19 +85,24 @@ export function createApp({
     if (missing.length > 0) {
       return res.json({ ready: false, missing, database: null, reddit: null, scheduler: null });
     }
+    // Readers expose observations from real checks. Polling status must not
+    // launch a browser, hit Reddit, or turn a successful launch into proof
+    // that public pages are readable. Legacy/test clients retain verify().
+    const reader = typeof reddit.getDiagnostics === 'function' ? reddit.getDiagnostics() : null;
     const [dbError, redditError] = await Promise.all([
       repo.ping().catch((err) => err.message),
-      reddit.verify().then(
+      reader ? Promise.resolve(reader.readable === false || reader.paused ? reader.pause_reason?.message ?? reader.last_error?.message ?? 'Reddit reader is unavailable.' : null) : reddit.verify().then(
         () => null,
         (err) => err.message,
       ),
     ]);
     res.json({
-      ready: !dbError && !redditError,
+      ready: !dbError && !redditError && (!reader || reader.readable === true),
       missing,
       database: { ok: !dbError, error: dbError },
-      reddit: { ok: !redditError, error: redditError },
+      reddit: { ok: reader ? (!reader.paused && reader.readable === true ? true : reader.readable === null && !reader.paused ? null : false) : !redditError, error: redditError, ...(reader ? { reader } : {}) },
       scheduler: scheduler.status(),
+      retention: retention ? retention.status() : null,
     });
   });
 
@@ -102,7 +111,7 @@ export function createApp({
       res.status(503).json({ error: `Server not configured. Missing in server/.env: ${missing.join(', ')}` });
     });
   } else {
-    registerRoutes(app, { repo, reddit, checker, scheduler, log });
+    registerRoutes(app, { repo, reddit, checker, scheduler, members, log });
   }
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
@@ -125,15 +134,13 @@ export function createApp({
   return app;
 }
 
-function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
-  async function requireAccount(id) {
-    const account = UUID_RE.test(id) ? await repo.getAccount(id) : null;
-    if (!account) throw new HttpError(404, 'Account not found');
-    return account;
-  }
+function registerRoutes(app, { repo, reddit, checker, scheduler, members, log }) {
+  const requireAccount = accountRequirer(repo);
 
   registerShieldRoutes(app,{repo,reddit});
   registerPreventionOperationsRoutes(app,{repo});
+  registerGateRoutes(app, { repo, log });
+  registerReaderVerificationRoutes(app, { reddit });
 
   // Preventer: internal, read-only activity & draft checks. No automatic
   // posting, voting, or manipulation of Reddit sessions occurs here.
@@ -231,6 +238,8 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
     } catch (err) {
       if (err instanceof HttpError) throw err;
       // A live API failure is a report, not a 500: surface the message.
+      const diagnostics = readerErrorDetails(err);
+      if (diagnostics) return res.status(502).json({ error: diagnostics.message, diagnostics });
       throw new HttpError(502, `Reddit check failed: ${err.message || String(err)}`);
     }
   });
@@ -260,10 +269,17 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
       repo.listAlerts({ accountId: account.id, limit: 20 }),
     ]);
     const lastCheck = checks[0] ?? null;
+    const lastSuccessful = checks.find((check) => !check.error && check.status !== 'error') ?? null;
     res.json({
       account: { ...account, checking: checker.isChecking(account.id) },
-      latestCheck: checks.find((check) => !check.error) ?? null,
-      lastError: lastCheck?.error ? { checked_at: lastCheck.checked_at, error: lastCheck.error } : null,
+      latestCheck: lastSuccessful,
+      lastError: lastCheck?.error ? {
+        checked_at: lastCheck.checked_at,
+        error: lastCheck.error,
+        diagnostics: lastCheck.factors?.find((factor) => factor.key === 'reader_error')?.diagnostics ?? null,
+      } : null,
+      stale: Boolean(lastCheck?.error || lastCheck?.status === 'error'),
+      last_successful_check_at: lastSuccessful?.checked_at ?? null,
       history: checks
         .filter((check) => !check.error)
         .reverse()
@@ -282,6 +298,61 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
     });
   });
 
+  // Which communities are removing this account's content. The window is in
+  // days; content_items only holds what checks have seen, so a short window on
+  // a new account is thin by nature and the rows say so.
+  function windowDaysFrom(raw) {
+    const days = Number(raw);
+    return Number.isFinite(days) && days >= 1 && days <= 365 ? Math.floor(days) : DEFAULT_WINDOW_DAYS;
+  }
+
+  app.get('/api/accounts/:id/subreddits', async (req, res) => {
+    const account = await requireAccount(req.params.id);
+    const days = windowDaysFrom(req.query.days);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const rows = summarizeSubreddits(await repo.getContentItems(account.id, since), { windowDays: days });
+    res.json({ account_id: account.id, username: account.username, window_days: days, summary: concentration(rows), subreddits: rows });
+  });
+
+  // The same question across the workspace. A subreddit removing content from
+  // more than one monitored account is worth more attention than one
+  // account's bad week there.
+  app.get('/api/subreddits', async (req, res) => {
+    const days = windowDaysFrom(req.query.days);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const accounts = await repo.listAccounts();
+    const perAccount = [];
+    for (const account of accounts) {
+      const rows = summarizeSubreddits(await repo.getContentItems(account.id, since), { windowDays: days });
+      perAccount.push({ account, rows });
+    }
+    res.json({ window_days: days, accounts: accounts.length, subreddits: mergeSubredditSummaries(perAccount) });
+  });
+
+  // Everything stored about one account, as a download. JSON is the whole
+  // bundle; CSV is one table, because a CSV of three different row shapes is
+  // not a spreadsheet anyone can use.
+  app.get('/api/accounts/:id/export', async (req, res) => {
+    const account = await requireAccount(req.params.id);
+    const format = req.query.format === 'csv' ? 'csv' : 'json';
+    const { checks, content, alerts } = await repo.exportAccountHistory(account.id);
+
+    if (format === 'csv') {
+      const table = req.query.table ?? 'checks';
+      if (!EXPORT_TABLES.includes(table)) {
+        throw new HttpError(400, `table must be one of: ${EXPORT_TABLES.join(', ')}.`);
+      }
+      const rows = { checks, content, alerts }[table];
+      res.type('text/csv; charset=utf-8');
+      res.set('Content-Disposition', `attachment; filename="${exportFilename(account.username, { table, extension: 'csv' })}"`);
+      return res.send(toCsv(rows, EXPORT_COLUMNS[table]));
+    }
+
+    res.type('application/json; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${exportFilename(account.username, { extension: 'json' })}"`);
+    res.send(JSON.stringify(accountBundle({ account, checks, content, alerts }), null, 2));
+  });
+
   app.patch('/api/accounts/:id', async (req, res) => {
     const account = await requireAccount(req.params.id);
     const body = req.body ?? {};
@@ -290,6 +361,19 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
     if ('notes' in body) patch.notes = cleanText(body.notes, 1000);
     if ('paused' in body) patch.paused = Boolean(body.paused);
     if ('stealth_mode' in body) patch.stealth_mode = Boolean(body.stealth_mode);
+    // null clears the override and puts the account back on the server-wide
+    // interval; the 15-minute floor is the same one config.js applies.
+    if ('check_interval_minutes' in body) {
+      const raw = body.check_interval_minutes;
+      if (raw === null || raw === '') patch.check_interval_minutes = null;
+      else {
+        const minutes = Number(raw);
+        if (!Number.isInteger(minutes) || minutes < 15 || minutes > 10080) {
+          throw new HttpError(400, 'Check interval must be a whole number of minutes between 15 and 10080, or null.');
+        }
+        patch.check_interval_minutes = minutes;
+      }
+    }
     if (Object.keys(patch).length === 0) throw new HttpError(400, 'Nothing to update');
     res.json({ account: await repo.updateAccount(account.id, patch) });
   });
@@ -312,64 +396,7 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
     const body = req.body ?? {};
     const { ok, value, errors } = validateFingerprint(body);
     if (!ok) throw new HttpError(400, errors.join(' '));
-    // Preserve any existing warm-up plan.
-    const existingPlan = account.fingerprint?.warmup ?? null;
-    const fingerprint = existingPlan ? { ...value, warmup: existingPlan } : value;
-    const updated = await repo.updateAccount(account.id, { fingerprint });
-    res.json({ account: updated });
-  });
-
-  // Stealth: start a warm-up plan.
-  app.post('/api/accounts/:id/stealth/warmup/start', async (req, res) => {
-    const account = await requireAccount(req.params.id);
-    if (!account.stealth_mode) throw new HttpError(400, 'Stealth mode is not enabled for this account.');
-    // Estimate account age from the last check if available.
-    const checks = await repo.getRecentChecks(account.id, 1);
-    const check = checks[0];
-    const ageDays = check?.account_created_at
-      ? Math.floor((Date.now() - Date.parse(check.account_created_at)) / (24 * 60 * 60 * 1000))
-      : 0;
-    const plan = createWarmupPlan(ageDays);
-    const existing = account.fingerprint ?? {};
-    const fingerprint = { ...existing, warmup: plan };
-    const updated = await repo.updateAccount(account.id, { fingerprint });
-    res.json({ account: updated, plan });
-  });
-
-  // Stealth: record a warm-up action as performed.
-  app.post('/api/accounts/:id/stealth/warmup/action', async (req, res) => {
-    const account = await requireAccount(req.params.id);
-    const plan = account.fingerprint?.warmup;
-    if (!plan) throw new HttpError(400, 'No warm-up plan is active.');
-    if (plan.actions_done >= plan.actions_target) throw new HttpError(400, 'Warm-up plan is already complete.');
-    const body = req.body ?? {};
-    const action = String(body.action ?? 'upvote').slice(0, 60);
-    await repo.insertWarmupLog(account.id, action);
-    const updatedPlan = { ...plan, actions_done: plan.actions_done + 1 };
-    const fingerprint = { ...account.fingerprint, warmup: updatedPlan };
-    const updated = await repo.updateAccount(account.id, { fingerprint });
-    res.json({ account: updated, plan: updatedPlan });
-  });
-
-  // Stealth: get the warm-up log.
-  app.get('/api/accounts/:id/stealth/warmup/log', async (req, res) => {
-    const account = await requireAccount(req.params.id);
-    const log = await repo.getWarmupLog(account.id, 50);
-    const plan = account.fingerprint?.warmup ?? null;
-    res.json({
-      plan,
-      progress: plan ? warmupProgress(plan) : null,
-      log,
-    });
-  });
-
-  // Stealth: clear the warm-up plan and log.
-  app.delete('/api/accounts/:id/stealth/warmup', async (req, res) => {
-    const account = await requireAccount(req.params.id);
-    const fingerprint = { ...account.fingerprint };
-    delete fingerprint.warmup;
-    await repo.clearWarmupLog(account.id);
-    const updated = await repo.updateAccount(account.id, { fingerprint });
+    const updated = await repo.updateAccount(account.id, { fingerprint: value });
     res.json({ account: updated });
   });
 
@@ -457,7 +484,12 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
   });
 
   app.post('/api/check-all', (req, res) => {
-    res.status(202).json({ started: scheduler.trigger() });
+    if (req.body?.force !== undefined && typeof req.body.force !== 'boolean') {
+      throw new HttpError(400, 'Force must be a boolean.');
+    }
+    const started = scheduler.trigger({ force: req.body?.force === true });
+    const { readerPaused = false, retryAt = null } = scheduler.status();
+    res.status(202).json({ started, readerPaused, retryAt });
   });
 
   app.get('/api/alerts', async (req, res) => {
@@ -475,6 +507,50 @@ function registerRoutes(app, { repo, reddit, checker, scheduler, log }) {
   app.post('/api/alerts/:id/ack', async (req, res) => {
     if (!UUID_RE.test(req.params.id)) throw new HttpError(404, 'Alert not found');
     await repo.ackAlert(req.params.id);
+    res.status(204).end();
+  });
+
+  // --- The team -------------------------------------------------------------
+  // Everyone with access can see who else has it; only owners (the addresses
+  // in AUTH_ALLOWED_EMAILS) can invite or remove, so an invited teammate
+  // cannot quietly widen the circle. With sign-in off there is no req.user and
+  // the API is loopback-only anyway, so the local operator counts as an owner.
+  function directory() {
+    if (!members) {
+      throw new HttpError(
+        503,
+        'Managing the team needs SUPABASE_SERVICE_ROLE_KEY and SUPABASE_URL in server/.env.',
+      );
+    }
+    return members;
+  }
+
+  const canManage = (req) => !req.user || members?.isOwner(req.user.email);
+
+  function requireOwner(req) {
+    if (!canManage(req)) {
+      throw new HttpError(403, 'Only a workspace owner can change who has access.');
+    }
+  }
+
+  app.get('/api/members', async (req, res) => {
+    res.json({
+      members: await directory().list(),
+      me: req.user?.email ?? null,
+      can_manage: Boolean(canManage(req)),
+    });
+  });
+
+  app.post('/api/members', async (req, res) => {
+    const team = directory();
+    requireOwner(req);
+    res.status(201).json(await team.invite(req.body?.email));
+  });
+
+  app.delete('/api/members/:id', async (req, res) => {
+    const team = directory();
+    requireOwner(req);
+    await team.remove(req.params.id, req.user?.email ?? null);
     res.status(204).end();
   });
 }

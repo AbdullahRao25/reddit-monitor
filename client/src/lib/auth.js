@@ -47,14 +47,33 @@ export function onAuthChange(cb) {
   return () => data.subscription.unsubscribe();
 }
 
+// Where Supabase sends people back to. The hash is dropped on purpose: the
+// app's own routes live there, and the sign-in link must land on the page
+// itself so the SDK can complete the session before the router runs.
+const returnTo = () => window.location.origin + window.location.pathname;
+
 // Hands off to GitHub and returns to this same page, where Supabase completes
 // the session from the URL. Which signed-in addresses are actually admitted is
-// decided by the server's allowlist, not here.
+// decided by the server, not here.
 export function signInWithGitHub() {
-  return supabase?.auth.signInWithOAuth({
-    provider: 'github',
-    options: { redirectTo: window.location.origin + window.location.pathname },
+  return supabase?.auth.signInWithOAuth({ provider: 'github', options: { redirectTo: returnTo() } });
+}
+
+// Emails a one-time sign-in link. shouldCreateUser is false so this can never
+// mint an account for a stranger who guesses the URL: only people already
+// invited in Supabase can receive a link, and everyone else gets the same
+// neutral answer either way (we never say whether an address is known).
+export async function signInWithEmail(email) {
+  if (!supabase) return { ok: false, error: 'Sign-in is not configured for this build.' };
+  const { error } = await supabase.auth.signInWithOtp({
+    email: String(email).trim().toLowerCase(),
+    options: { emailRedirectTo: returnTo(), shouldCreateUser: false },
   });
+  if (!error) return { ok: true };
+  // "Signups not allowed for otp" is what Supabase returns for an address it
+  // does not know. Saying so would turn this form into a membership oracle.
+  if (/signups? not allowed/i.test(error.message)) return { ok: true };
+  return { ok: false, error: error.message };
 }
 
 export function signOut() {

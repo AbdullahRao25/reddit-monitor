@@ -6,8 +6,12 @@ import { createAuth, supabaseVerifier } from './auth.js';
 import { createChecker } from './checker.js';
 import { config, missingConfig } from './config.js';
 import { createSupabaseRepo } from './db.js';
+import { createMemberDirectory } from './members.js';
 import { createNotifier } from './notify.js';
+import { ENGINES, createBrowserLauncher } from './browser/engines.js';
 import { createRedditClient } from './reddit.js';
+import { createRetention } from './retention.js';
+import { createEscalation } from './escalation.js';
 import { createHtmlRedditClient } from './redditHtml.js';
 import { createScheduler } from './scheduler.js';
 
@@ -25,20 +29,40 @@ if (missing.length > 0) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const repo = createSupabaseRepo(supabase);
+  if (config.redditMode === 'html') {
+    if (config.browserEngineDisabled) {
+      console.log(`The optional ${config.browserEngineDisabled} reader is disabled; using standard Playwright.`);
+    }
+    if (config.browserEngineUnknown) {
+      console.warn(
+        `REDDIT_BROWSER_ENGINE="${config.browserEngineUnknown}" is not one of ${ENGINES.join(', ')}; ` +
+          'falling back to "playwright", which is the easiest of them to detect.',
+      );
+    }
+    console.log(`Reading Reddit with the ${config.browserEngine} browser engine`);
+  }
   const reddit =
     config.redditMode === 'html'
       ? createHtmlRedditClient({
+          manualVerification: config.manualVerification,
+          createBrowser: createBrowserLauncher({
+            engine: config.browserEngine,
+            channel: config.browserChannel,
+            profileDir: config.browserProfileDir || null,
+            hidden: !config.browserVisible,
+          }),
           browserOptions: config.browserExecutablePath
             ? { executablePath: config.browserExecutablePath }
             : {},
         })
       : createRedditClient(config.reddit);
-  const checker = createChecker({
-    repo,
-    reddit,
-    notify: createNotifier({ webhookUrl: config.alertWebhookUrl }),
-  });
-  const scheduler = createScheduler({ repo, checker, intervalMinutes: config.checkIntervalMinutes });
+  // One notifier, shared: the checker sends new alerts through it and the
+  // escalation pass sends the reminders for the ones nobody acknowledged.
+  const notify = createNotifier({ webhookUrl: config.alertWebhookUrl });
+  const checker = createChecker({ repo, reddit, notify });
+  const scheduler = createScheduler({ repo, checker, reddit, intervalMinutes: config.checkIntervalMinutes });
+  const retention = createRetention({ repo, retentionDays: config.retentionDays });
+  const escalation = createEscalation({ repo, notify, afterHours: config.alertEscalateHours });
 
   // Team sign-in. On by default on any non-loopback host (see config.js).
   const auth = config.auth.enabled
@@ -49,6 +73,7 @@ if (missing.length > 0) {
         }),
         allowedEmails: config.auth.allowedEmails,
         allowedDomain: config.auth.allowedDomain,
+        admitInvited: config.auth.admitInvited,
         allowAny: config.auth.allowAny,
       })
     : undefined;
@@ -64,7 +89,15 @@ if (missing.length > 0) {
     );
   }
 
-  deps = { missing, repo, reddit, checker, scheduler, auth, corsOrigins: config.allowedOrigins };
+  // Invites and removals run as the service role, on the same client as the
+  // repo. Owners are the addresses in AUTH_ALLOWED_EMAILS: the people who can
+  // already get in without an invite are the ones who may hand them out.
+  const members = createMemberDirectory({
+    admin: supabase.auth.admin,
+    owners: config.auth.allowedEmails,
+  });
+
+  deps = { missing, repo, reddit, checker, scheduler, retention, escalation, auth, members, corsOrigins: config.allowedOrigins };
 }
 
 const app = createApp({ ...deps, clientDist: existsSync(clientDist) ? clientDist : null });
@@ -78,5 +111,17 @@ app.listen(config.port, config.host, (err) => {
   if (deps.scheduler) {
     deps.scheduler.start();
     console.log(`Checking all accounts every ${config.checkIntervalMinutes} minutes`);
+  }
+  if (deps.retention) {
+    if (config.retentionDays > 0) {
+      deps.retention.start();
+      console.log(`Keeping history for ${config.retentionDays} days; set RETENTION_DAYS=0 to keep everything`);
+    } else {
+      console.log('RETENTION_DAYS=0: history is never pruned and will grow without limit.');
+    }
+  }
+  if (deps.escalation && config.alertEscalateHours > 0 && config.alertWebhookUrl) {
+    deps.escalation.start();
+    console.log(`Re-sending alerts still unacknowledged after ${config.alertEscalateHours} hours`);
   }
 });

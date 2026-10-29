@@ -17,3 +17,10 @@ dist/
 # Local scratch
 .DS_Store
 Thumbs.db
+
+# Saved relay tunnel target for the one-click launcher (machine-specific).
+scripts/relay-host.txt
+
+# The reader browser's reused profile (REDDIT_BROWSER_PROFILE_DIR): it holds
+# the cookies a person's verification produced. Machine-specific, never shared.
+server/.browser-profile/

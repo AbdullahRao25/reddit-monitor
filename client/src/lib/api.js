@@ -19,7 +19,7 @@ async function request(path, {method='GET', body, csv, signal}={}) {
   if (response.status === 204) return null;
   let json;
   try { json = await response.json(); } catch { json = null; }
-  if (!response.ok) throw Object.assign(new Error(json?.error || json?.message || `${method} ${path}: HTTP ${response.status}`), {status:response.status});
+  if (!response.ok) throw Object.assign(new Error(json?.error || json?.message || `${method} ${path}: HTTP ${response.status}`), {status:response.status, ...(json?.diagnostics ? {diagnostics:json.diagnostics} : {})});
   return json;
 }
 const id = (value) => encodeURIComponent(value);
@@ -55,6 +55,8 @@ export function normalizeDetail(d) {
 
 export const api = {
   status: () => request('/status'),
+  openReaderVerification: () => request('/reader/verification/open',{method:'POST',body:{}}),
+  completeReaderVerification: () => request('/reader/verification/complete',{method:'POST',body:{}}),
   checkLive: (username) => request('/check-live',{method:'POST',body:{username}}),
   accounts: async () => ((await request('/accounts')).accounts ?? []).map(normalizeAccount),
   alerts: async () => ((await request('/alerts?limit=200')).alerts ?? []).map(normalizeAlert),
@@ -63,18 +65,29 @@ export const api = {
   patchAccount: (accountId,values) => request(`/accounts/${id(accountId)}`,{method:'PATCH',body:values}),
   removeAccount: (accountId) => request(`/accounts/${id(accountId)}`,{method:'DELETE'}),
   checkAccount: (accountId) => request(`/accounts/${id(accountId)}/check`,{method:'POST'}),
-  checkAll: () => request('/check-all',{method:'POST'}),
+  checkAll: ({force=false}={}) => request('/check-all',{method:'POST',...(force?{body:{force:true}}:{})}),
   resolveAlert: (alertId) => request(`/alerts/${id(alertId)}/ack`,{method:'POST'}),
   resolveAllAlerts: () => request('/alerts/ack-all',{method:'POST'}),
   fingerprint: (accountId) => request(`/accounts/${id(accountId)}/stealth/fingerprint`),
   putFingerprint: (accountId,details) => request(`/accounts/${id(accountId)}/stealth/fingerprint`,{method:'PUT',body:details}),
-  startWarmup: (accountId) => request(`/accounts/${id(accountId)}/stealth/warmup/start`,{method:'POST'}),
-  recordWarmup: (accountId,action) => request(`/accounts/${id(accountId)}/stealth/warmup/action`,{method:'POST',body:{action}}),
-  warmupLog: (accountId) => request(`/accounts/${id(accountId)}/stealth/warmup/log`),
-  deleteWarmup: (accountId) => request(`/accounts/${id(accountId)}/stealth/warmup`,{method:'DELETE'}),
+  // The active gate (server/src/stealth/gate.js). A GET only reads the queue;
+  // asking whether an action may go out means POSTing it.
+  gate: (accountId) => request(`/accounts/${id(accountId)}/stealth/gate`),
+  gateQueue: (accountId, {openOnly=false}={}) => request(`/accounts/${id(accountId)}/stealth/gate/queue${openOnly?'?open=1':''}`),
+  gateCheck: (accountId, action, payload) => request(`/accounts/${id(accountId)}/stealth/gate`,{method:'POST',body:{action,...(payload?{payload}:{})}}),
+  gateRelease: (accountId, queuedId, reason) => request(`/accounts/${id(accountId)}/stealth/gate/${id(queuedId)}`,{method:'POST',body:reason?{reason}:{}}),
+  // Which communities are removing this account's content, and the same
+  // question across the workspace.
+  subreddits: (accountId, {days}={}) => request(`/accounts/${id(accountId)}/subreddits${days?`?days=${encodeURIComponent(days)}`:''}`),
+  allSubreddits: ({days}={}) => request(`/subreddits${days?`?days=${encodeURIComponent(days)}`:''}`),
   votes: (accountId, {direction, kind}={}) => request(`/accounts/${id(accountId)}/votes?${new URLSearchParams({...(direction?{direction}:{}),...(kind?{kind}:{})})}`),
   importVotes: (accountId, kind, csvText) => request(`/accounts/${id(accountId)}/votes/import?kind=${encodeURIComponent(kind)}`,{method:'POST',csv:csvText}),
   clearVotes: (accountId) => request(`/accounts/${id(accountId)}/votes`,{method:'DELETE'}),
+  // The team, from Supabase Auth. Inviting and removing need a workspace owner;
+  // the server decides that and reports it as can_manage.
+  members: () => request('/members'),
+  invite: (email) => request('/members',{method:'POST',body:{email}}),
+  removeMember: (memberId) => request(`/members/${encodeURIComponent(memberId)}`,{method:'DELETE'}),
   preventerAccount: (accountId) => request(`/preventer/accounts/${id(accountId)}`),
   preventerOnboarding: (accountId, values) => request(`/preventer/accounts/${id(accountId)}/onboarding`,{method:'PUT',body:values}),
   preventerScan: (draft) => request('/preventer/preflight',{method:'POST',body:draft}),
@@ -96,6 +109,33 @@ export const api = {
   shieldCreateHold: (payload) => request('/shield/holds',{method:'POST',body:payload}),
   shieldReleaseHold: (holdId,reason) => request(`/shield/holds/${id(holdId)}/release`,{method:'POST',body:{reason}}),
 };
+
+// An export is a file, not JSON, so it goes around request(): the body is
+// saved rather than parsed, and the filename comes from the server's
+// Content-Disposition so one account's exports do not overwrite each other.
+export async function downloadExport(accountId, {format='json', table}={}) {
+  const params = new URLSearchParams({format, ...(table?{table}:{})});
+  const token = await currentToken();
+  let response;
+  try {
+    response = await fetch(`${BASE}/accounts/${id(accountId)}/export?${params}`, {headers: token?{Authorization:`Bearer ${token}`}:{}});
+  } catch { throw Object.assign(new Error('Cannot reach the API server. Is it running?'),{status:0}); }
+  if (!response.ok) {
+    let json; try { json = await response.json(); } catch { json = null; }
+    throw Object.assign(new Error(json?.error || `Export failed: HTTP ${response.status}`),{status:response.status});
+  }
+  const name = /filename="([^"]+)"/.exec(response.headers.get('content-disposition') || '')?.[1]
+    || `export.${format === 'csv' ? 'csv' : 'json'}`;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url; link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return name;
+}
 
 // Average risk across accounts for each of the last `days` days: per account, the last check on or before that day.
 export function riskTrendFrom(histories, days=7) {
@@ -120,4 +160,14 @@ export const safeUrl=(url)=>{try{const u=new URL(url);return ['http:','https:'].
 export const voteFileKind=(name)=>{const m=String(name||'').replaceAll('\\','/').split('/').pop().match(/^(post|comment)_votes(?:\s*\(\d+\))?\.csv$/i);return m?m[1].toLowerCase():null;};
 // "pics" -> "r/pics"; profile posts use Reddit's "u_name" community -> "u/name".
 export const communityLabel=(sub)=>!sub?'—':sub.startsWith('u_')?`u/${sub.slice(2)}`:`r/${sub}`;
-export const WARMUP_ACTIONS=[['upvote','Upvote a high-karma post'],['comment','Short comment on a high-karma thread'],['view_profile','View a few user profiles'],['browse_sub','Browse a subscribed subreddit']];
+// A row from the subreddit breakdown (GET /subreddits). `unknown` is
+// summarizeSubreddits's own sentinel for an item whose subreddit could not be
+// read — which is why only breakdown rows get this treatment: r/unknown is a
+// real subreddit, and labelling it "Unknown" in the content list would be wrong.
+export const breakdownLabel=(sub)=>sub==='unknown'?'Unknown':communityLabel(sub);
+export const percent=(value)=>value===null||value===undefined?'—':`${Math.round(value*100)}%`;
+// Mirrors MIN_ITEMS_FOR_RATE in server/src/subreddits.js: under this many
+// items a removal rate is noise (one removal out of two posts is one removal),
+// so the row carries no rate and the UI says "thin sample" instead.
+export const MIN_ITEMS_FOR_RATE=4;
+export const removalRate=(removed,items)=>items>=MIN_ITEMS_FOR_RATE?Number((removed/items).toFixed(4)):null;

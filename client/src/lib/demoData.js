@@ -1,3 +1,4 @@
+import {MIN_ITEMS_FOR_RATE, removalRate} from './api.js';
 const dayAgo = (days, hours=0) => new Date(Date.now() - (days * 24 + hours) * 3600e3).toISOString();
 export const seedAccounts = [
  {id:'demo-a1',username:'northstar_notes',status:'healthy',risk_score:12,karma:4820,stealth_mode:false,last_checked_at:dayAgo(0,0.2),created_utc:dayAgo(390),posts_30d:18,comments_30d:84,removed_30d:0},
@@ -31,6 +32,55 @@ export const seedContent = [
  {id:'demo-post-5',account_id:'demo-a1',type:'post',subreddit:'r/books',title:'Favorite science fiction reads this year',body:'A thread about book recommendations.',status:'visible',created_at:dayAgo(1)},
  {id:'demo-comment-6',account_id:'demo-a2',type:'comment',subreddit:'r/technology',title:'Discussion reply',body:'Thoughts on open source tools.',status:'visible',created_at:dayAgo(3)},
 ];
+// Removals by community, as GET /api/accounts/:id/subreddits returns it.
+// demo-a3 is the account whose removals are concentrated in one subreddit,
+// so the panel's "read that community's rules" verdict has something to say.
+const SUBREDDITS = {
+  'demo-a3': [
+    {subreddit:'askreddit', items:14, posts:3, comments:11, removed:5, removed_sitewide:1, removed_by_mod:4, undated:0, score:92, removal_rate:0.3571, thin_sample:false, last_item_at:dayAgo(2), last_removal_at:dayAgo(2)},
+    {subreddit:'technology', items:11, posts:6, comments:5, removed:1, removed_sitewide:0, removed_by_mod:1, undated:0, score:210, removal_rate:0.0909, thin_sample:false, last_item_at:dayAgo(1), last_removal_at:dayAgo(6)},
+    {subreddit:'programming', items:7, posts:2, comments:5, removed:0, removed_sitewide:0, removed_by_mod:0, undated:0, score:48, removal_rate:0, thin_sample:false, last_item_at:dayAgo(3), last_removal_at:null},
+    {subreddit:'webdev', items:2, posts:1, comments:1, removed:1, removed_sitewide:1, removed_by_mod:0, undated:0, score:4, removal_rate:null, thin_sample:true, last_item_at:dayAgo(9), last_removal_at:dayAgo(9)},
+  ],
+  'demo-a5': [
+    {subreddit:'learnprogramming', items:9, posts:4, comments:5, removed:2, removed_sitewide:2, removed_by_mod:0, undated:1, score:31, removal_rate:0.2222, thin_sample:false, last_item_at:dayAgo(4), last_removal_at:dayAgo(4)},
+    {subreddit:'javascript', items:6, posts:2, comments:4, removed:1, removed_sitewide:0, removed_by_mod:1, undated:0, score:18, removal_rate:0.1667, thin_sample:false, last_item_at:dayAgo(5), last_removal_at:dayAgo(7)},
+  ],
+};
+export function demoSubreddits(accountId,{days=90}={}) {
+  const subreddits = SUBREDDITS[accountId] ?? [];
+  const removed = subreddits.reduce((sum,row)=>sum+row.removed,0);
+  const items = subreddits.reduce((sum,row)=>sum+row.items,0);
+  const worst = subreddits.find(row=>row.removed>0) ?? null;
+  return {
+    account_id:accountId, username:seedAccounts.find(a=>a.id===accountId)?.username ?? 'demo', window_days:days,
+    summary:{removed, items, subreddits:subreddits.length, worst:worst?worst.subreddit:null, share:removed?Number((worst.removed/removed).toFixed(4)):null},
+    subreddits,
+  };
+}
+
+// The workspace card's rows, as GET /api/subreddits returns them: the same
+// per-account breakdowns merged, so the demo and the live view agree on shape.
+export function demoWorkspaceSubreddits() {
+  const groups = new Map();
+  for (const accountId of Object.keys(SUBREDDITS)) {
+    const username = seedAccounts.find(a=>a.id===accountId)?.username ?? 'demo';
+    for (const row of SUBREDDITS[accountId]) {
+      if(!groups.has(row.subreddit))groups.set(row.subreddit,{subreddit:row.subreddit,items:0,removed:0,removed_sitewide:0,accounts:[]});
+      const merged=groups.get(row.subreddit);
+      merged.items+=row.items;merged.removed+=row.removed;merged.removed_sitewide+=row.removed_sitewide;
+      merged.accounts.push({id:accountId,username,items:row.items,removed:row.removed});
+    }
+  }
+  return [...groups.values()].map(row=>({
+    ...row,
+    account_count:row.accounts.length,
+    accounts_with_removals:row.accounts.filter(a=>a.removed>0).length,
+    removal_rate:removalRate(row.removed,row.items),
+    thin_sample:row.items<MIN_ITEMS_FOR_RATE,
+  })).sort((a,b)=>b.accounts_with_removals-a.accounts_with_removals||b.removed-a.removed||b.items-a.items||a.subreddit.localeCompare(b.subreddit));
+}
+
 // Vote history as GET /api/accounts/:id/votes returns it. demo-a3 and demo-a5 voted on one same post, so the
 // shared-votes warning has something to show.
 const vote=(account_id,item_id,kind,direction,subreddit,slug,days)=>({account_id,item_id,kind,direction,subreddit,title:slug.replaceAll('_',' '),permalink:`https://www.reddit.com/r/${subreddit}/comments/${kind==='post'?item_id.slice(3):'demo1'}/${slug}/${kind==='comment'?`${item_id.slice(3)}/`:''}`,first_seen_at:dayAgo(days),updated_at:dayAgo(0,3)});
@@ -56,4 +106,15 @@ export function demoVotes(accountId,{direction,kind}={}){
   votes:matching,matching:matching.length,last_imported_at:own.length?own[0].updated_at:null,
   shared:own.map(v=>({...v,others:seedVotes.filter(o=>o.item_id===v.item_id&&o.account_id!==accountId).map(o=>({account_id:o.account_id,username:usernames[o.account_id],direction:o.direction}))})).filter(v=>v.others.length),
  };
+}
+
+// The team, as the Settings page shows it. Demo mode never calls Supabase, so
+// inviting and removing are disabled there and this is only ever read.
+export function demoMembers(){
+ return {can_manage:true,me:'you@agency.co',members:[
+  {id:'m1',email:'you@agency.co',owner:true,pending:false,invited_at:null,last_sign_in_at:'2026-10-27T08:10:00Z'},
+  {id:'m2',email:'priya@agency.co',owner:false,pending:false,invited_at:'2026-10-12T09:00:00Z',last_sign_in_at:'2026-10-26T17:42:00Z'},
+  {id:'m3',email:'marcus@agency.co',owner:false,pending:false,invited_at:'2026-10-18T14:30:00Z',last_sign_in_at:'2026-10-25T11:05:00Z'},
+  {id:'m4',email:'newhire@agency.co',owner:false,pending:true,invited_at:'2026-10-26T16:00:00Z',last_sign_in_at:null},
+ ]};
 }

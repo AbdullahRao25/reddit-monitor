@@ -9,10 +9,8 @@
 // Every call to `gateDecision()` answers one of three things:
 //
 //   pass  — a safe slot is open. The action may go out now. The decision
-//           carries the headers the outbound request must carry so the
-//           request's fingerprint matches the one the account claims
-//           (accounts.fingerprint), plus a pacing token the client can
-//           present to prove it is the holder of this exact decision.
+//           carries a pacing token the client can present to prove it is the
+//           holder of this exact decision.
 //
 //   hold  — pacing says "not yet." The action is fine, it is just not the
 //           moment: the local hour is in the account's dead of night, or the
@@ -34,8 +32,8 @@
 // so it holds at most, never blocks.
 //
 // Everything here is pure. It takes the account row, the latest check
-// (or a pre-computed intervention), the pacing state and the fingerprint,
-// and returns the decision. The routes around it (app.js) own persistence:
+// (or a pre-computed intervention) and the pacing state, and returns the
+// decision. The routes around it (app.js) own persistence:
 // they are the ones that insert a queue row on a hold, release it, and audit
 // the outcome. That keeps this file testable with a memory repo and no clock
 // of its own.
@@ -113,28 +111,11 @@ function nextInWindow(now, timezone, window) {
 }
 
 // The account's timezone: the fingerprint claims one, the profile may hint
-// at another. The fingerprint wins — that is the identity the gate is
-// shaping requests to look like.
+// at another. The fingerprint wins — it is the environment the owner says
+// this account posts from, so it is the one whose local clock the posting
+// window should follow.
 function timezoneOf(account) {
   return account?.fingerprint?.timezone || account?.timezone_hint || null;
-}
-
-// Headers a request for this account must carry. Kept deliberately small and
-// mutually consistent: a browser that claims a locale sends the matching
-// accept-language, a platform in its UA must not be contradicted elsewhere,
-// and the timezone is exposed through a header a real client would set.
-export function gateHeaders(fingerprint, timezone) {
-  const fp = fingerprint ?? {};
-  const ua = fp.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  const locale = fp.locale || 'en-US';
-  return {
-    'user-agent': ua,
-    'accept-language': locale,
-    // A real client reports its time zone so the server can render times.
-    'x-time-zone': timezone || fp.timezone || '',
-    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'accept-encoding': 'gzip, deflate, br',
-  };
 }
 
 // The pacing state for one account. `releases` is the list of timestamps
@@ -194,10 +175,6 @@ function nextRelease(releases, now) {
  *   reasons:        human-readable strings for the decision (may be several)
  *   next_safe_at:   ms timestamp the action could pass, or null when it may
  *                   pass now (pass) or never until a human decides (block)
- *   headers:        the fingerprint-coherent headers for a passing action,
- *                   or null on hold/block (they are computed at pass time so
- *                   the fingerprint the client sends can be the one that
- *                   was actually approved)
  *   token:          a UUID the caller persists and the client presents back
  *                   to claim this specific decision; null on block
  *   intervention:   the danger verdict that applied, if any
@@ -219,7 +196,6 @@ export function gateDecision({
       verdict: BLOCK,
       reasons: [intervention.reason],
       next_safe_at: null,
-      headers: null,
       token: null,
       intervention,
     };
@@ -234,7 +210,6 @@ export function gateDecision({
       verdict: HOLD,
       reasons: [`Soft hold — ${intervention.reason}`],
       next_safe_at: next_at,
-      headers: null,
       token: randomUUID(),
       intervention,
     };
@@ -266,8 +241,7 @@ export function gateDecision({
         verdict: HOLD,
         reasons,
         next_safe_at: mergedNext,
-        headers: null,
-        token: randomUUID(),
+          token: randomUUID(),
         intervention,
       };
     }
@@ -289,7 +263,6 @@ export function gateDecision({
       verdict: HOLD,
       reasons,
       next_safe_at: merged.length ? Math.max(...merged) : null,
-      headers: null,
       token: randomUUID(),
       intervention,
     };
@@ -304,7 +277,6 @@ export function gateDecision({
       verdict: HOLD,
       reasons,
       next_safe_at: pacing.next_at,
-      headers: null,
       token: randomUUID(),
       intervention,
     };
@@ -315,7 +287,6 @@ export function gateDecision({
     verdict: PASS,
     reasons: ['Safe slot: inside the posting window, clear of danger, pacing budget available.'],
     next_safe_at: now,
-    headers: gateHeaders(account?.fingerprint, tz),
     token: randomUUID(),
     intervention,
   };

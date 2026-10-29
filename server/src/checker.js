@@ -7,7 +7,8 @@ import { deriveAlerts } from './alerts.js';
 import { classifyRemoval, isPlaceholderText, REMOVED_STATUSES, toContentItem } from './content.js';
 import { assessRisk } from './risk.js';
 import { assessEarlyRisk, earlyRiskRecommendations } from './stealth/earlyRisk.js';
-import { stealthRecommendations } from './stealth/warmup.js';
+import { stealthRecommendations } from './stealth/recommendations.js';
+import { readerErrorDetails } from './readerErrors.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 // How far back stored posts/comments keep being re-checked for removal.
@@ -275,6 +276,7 @@ export function createChecker({
     let hidden = null;
     let unlisted = [];
     let error = null;
+    let readerError = null;
 
     try {
       const about = await reddit.getUserAbout(account.username);
@@ -289,8 +291,13 @@ export function createChecker({
         ({ items, newlyRemoved, undated, hidden, unlisted } = await refreshContent(account, checkedAt, profile));
       }
     } catch (err) {
-      error = err.message || String(err);
-      log.warn(`Check failed for u/${account.username}: ${error}`);
+      readerError = readerErrorDetails(err);
+      error = readerError?.message ?? (err.message || String(err));
+      const message = `Check failed for u/${account.username}: ${error}`;
+      // Use the same sanitized allowlist as the API and stored failed check.
+      // Operational logs need observed response details, never raw exceptions.
+      if (readerError) log.warn(message, { reader: readerError });
+      else log.warn(message);
     }
 
     const recentChecks = await repo.getRecentChecks(account.id, 5);
@@ -318,10 +325,9 @@ export function createChecker({
         ? assessEarlyRisk({ account, profile, items, now: now() })
         : null;
     if (account.stealth_mode && assessment && !error) {
-      const warmupLog = await repo.getWarmupLog(account.id, 20).catch(() => []);
       stealthRecs = [
         ...earlyRiskRecommendations(early),
-        ...stealthRecommendations(account, profile, assessment, warmupLog),
+        ...stealthRecommendations(account, assessment),
       ];
     }
     const allRecs = [...(assessment?.recommendations ?? []), ...stealthRecs];
@@ -329,6 +335,9 @@ export function createChecker({
     // dashboard's "Why this score" view covers both layers.
     const allFactors = [
       ...(assessment?.factors ?? []),
+      // Existing JSONB storage keeps diagnostics beside the failed check;
+      // no schema change, and no error can become a scored health signal.
+      ...(readerError ? [{ key: 'reader_error', label: 'Reddit reader unavailable', points: 0, diagnostics: readerError }] : []),
       ...(undated ? [undatedFactor(undated)] : []),
       ...(early?.signals ?? []).map((signal) => ({
         key: signal.key,
@@ -370,7 +379,10 @@ export function createChecker({
           // a high->critical escalation from the first crossing.
           early_risk_level: early?.level ?? null,
           last_checked_at: checkedAt,
-          ...(profile ? { link_karma: profile.linkKarma, comment_karma: profile.commentKarma } : {}),
+          // Partial but valid public profiles may omit individual metrics.
+          // Unknown values must not erase previously observed karma.
+          ...(Number.isFinite(profile?.linkKarma) ? { link_karma: profile.linkKarma } : {}),
+          ...(Number.isFinite(profile?.commentKarma) ? { comment_karma: profile.commentKarma } : {}),
           ...(status === 'active'
             ? { last_seen_active_at: checkedAt, items_sampled: window.length, items_removed: itemsRemoved }
             : {}),
